@@ -37,9 +37,9 @@
   },
   {
     "name": "文件读取工具",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "creator": "aiverse",
-    "lastUpdate": 1794117406045,
+    "lastUpdate": 1794117712565,
     "permission": [
       "all_files"
     ],
