@@ -34,5 +34,15 @@
       "notify"
     ],
     "package": "com.aiverse.notify"
+  },
+  {
+    "name": "文件读取工具",
+    "version": "1.0.0",
+    "creator": "aiverse",
+    "lastUpdate": 1794117406045,
+    "permission": [
+      "all_files"
+    ],
+    "package": "com.aiverse.fileread"
   }
 ]
