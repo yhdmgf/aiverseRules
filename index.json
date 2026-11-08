@@ -14,5 +14,25 @@
     "lastUpdate": 1794109935210,
     "permission": [],
     "package": "com.aiverse.textstat"
+  },
+  {
+    "name": "剪贴板工具",
+    "version": "1.0.0",
+    "creator": "aiverse",
+    "lastUpdate": 1794110059033,
+    "permission": [
+      "clipboard"
+    ],
+    "package": "com.aiverse.clipboard"
+  },
+  {
+    "name": "通知工具",
+    "version": "1.0.0",
+    "creator": "aiverse",
+    "lastUpdate": 1794110059033,
+    "permission": [
+      "notify"
+    ],
+    "package": "com.aiverse.notify"
   }
 ]
