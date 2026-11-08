@@ -27,9 +27,9 @@
   },
   {
     "name": "通知工具",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "creator": "aiverse",
-    "lastUpdate": 1794110059033,
+    "lastUpdate": 1794114118514,
     "permission": [
       "notify"
     ],
