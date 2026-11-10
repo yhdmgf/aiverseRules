@@ -1,21 +1,5 @@
 [
   {
-    "name": "时间戳工具",
-    "version": "1.0.0",
-    "creator": "aiverse",
-    "lastUpdate": 1794109935210,
-    "permission": [],
-    "package": "com.aiverse.timestamp"
-  },
-  {
-    "name": "文本统计",
-    "version": "1.0.0",
-    "creator": "aiverse",
-    "lastUpdate": 1794109935210,
-    "permission": [],
-    "package": "com.aiverse.textstat"
-  },
-  {
     "name": "剪贴板工具",
     "version": "1.0.0",
     "creator": "aiverse",
@@ -34,15 +18,5 @@
       "notify"
     ],
     "package": "com.aiverse.notify"
-  },
-  {
-    "name": "文件读取工具",
-    "version": "1.1.0",
-    "creator": "aiverse",
-    "lastUpdate": 1794117712565,
-    "permission": [
-      "all_files"
-    ],
-    "package": "com.aiverse.fileread"
   }
 ]
