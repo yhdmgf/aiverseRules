@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="README.md">简体中文</a> · <a href="README.en.md">English</a>
+</p>
+
 # AiVerse Script Plugin Repository
 
 This repository is the **script plugin repository** for [AiVerse](https://github.com/yhdmgf/AiVerse): it hosts installable script plugins (zip packages + `index.json` manifest). Once installed, a plugin registers as a **tool** for AiVerse, so the AI (Agent) can invoke it during conversation.

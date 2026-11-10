@@ -1,3 +1,7 @@
+<p align="center">
+  <a href="README.md">简体中文</a> · <a href="README.en.md">English</a>
+</p>
+
 # AiVerse 脚本插件仓库
 
 本仓库是 [AiVerse](https://github.com/yhdmgf/AiVerse) 的**脚本插件仓库**：存放可直接安装的脚本插件（zip 包 + `index.json` 清单）。安装后插件会注册为 AiVerse 的**工具**，AI（Agent）就能在对话中调用它执行操作。
