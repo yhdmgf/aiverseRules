@@ -2,46 +2,6 @@
   "schema_version": 1,
   "plugins": [
     {
-      "id": "demo.memory",
-      "name": {
-        "zh-cn": "记忆管理",
-        "en": "Memory"
-      },
-      "description": {
-        "zh-cn": "在设置中管理现有的全局与项目记忆，直接读写 ~/.aicode/memory 与工作区 .aicode/memory。",
-        "en": "Manage existing global and project memories in Settings by reading and writing ~/.aicode/memory and the workspace .aicode/memory."
-      },
-      "author": "demo",
-      "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.0.1",
-      "license": "MIT",
-      "tags": [
-        "ui"
-      ],
-      "lastUpdate": 1794810513833
-    },
-    {
-      "id": "demo.ssh-manager",
-      "name": {
-        "default": "SSH Manager",
-        "zh-cn": "SSH 管理",
-        "en": "SSH Manager"
-      },
-      "description": {
-        "default": "Resident demo plugin: connects enabled SSH servers at app startup and exposes status/exec tools to the AI.",
-        "zh-cn": "常驻示例插件：App 启动时连接启用的 SSH 服务器，并向 AI 提供状态查看与远程命令工具。"
-      },
-      "author": "demo",
-      "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.1.4",
-      "license": "MIT",
-      "tags": [
-        "ui",
-        "tool"
-      ],
-      "lastUpdate": 1794810513837
-    },
-    {
       "id": "demo.chat-bridge",
       "name": {
         "default": "Chat Bridge",
