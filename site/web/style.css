@@ -70,6 +70,10 @@ body {
 
 ::selection { background: var(--brand); color: #fff; }
 
+/* 强制 hidden 属性生效：防止 .login-view/.view 的 display:flex 覆盖 display:none
+   导致登录后登录框不消失 */
+[hidden] { display: none !important; }
+
 .view { max-width: 960px; margin: 0 auto; padding: 0 20px 56px; }
 
 .muted { color: var(--muted); }
