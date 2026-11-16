@@ -18,7 +18,6 @@
   var loginError = document.getElementById('login-error');
   var loginBtn = document.getElementById('login-btn');
   var logoutBtn = document.getElementById('logout-btn');
-  var currentUser = document.getElementById('current-user');
   var listEl = document.getElementById('list');
   var countPending = document.getElementById('count-pending');
   var countDone = document.getElementById('count-done');
@@ -52,7 +51,6 @@
   function showAdmin(user) {
     loginView.hidden = true;
     adminView.hidden = false;
-    currentUser.textContent = user ? ('当前用户：' + user) : '';
   }
 
   // ---------- 启动：探测登录态 ----------
@@ -93,8 +91,14 @@
   });
 
   logoutBtn.addEventListener('click', function () {
+    if (!window.confirm('确定退出登录吗？')) { return; }
     api('/api/logout', { method: 'POST' }).finally(function () {
       showLogin();
+      var ok = document.getElementById('login-success');
+      if (ok) {
+        ok.textContent = '✓ 已退出登录';
+        ok.hidden = false;
+      }
     });
   });
 

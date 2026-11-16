@@ -107,7 +107,6 @@ body {
   height: 52px;
   border-radius: 14px;
   background: #fff;
-  border: 1px solid #e3e6ef;
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -210,7 +209,6 @@ body {
   height: 34px;
   border-radius: 9px;
   background: #fff;
-  border: 1px solid #e3e6ef;
   display: grid;
   place-items: center;
   overflow: hidden;
