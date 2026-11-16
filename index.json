@@ -1,22 +1,162 @@
-[
-  {
-    "name": "剪贴板工具",
-    "version": "1.0.0",
-    "creator": "aiverse",
-    "lastUpdate": 1794110059033,
-    "permission": [
-      "clipboard"
-    ],
-    "package": "com.aiverse.clipboard"
-  },
-  {
-    "name": "通知工具",
-    "version": "1.0.1",
-    "creator": "aiverse",
-    "lastUpdate": 1794114118514,
-    "permission": [
-      "notify"
-    ],
-    "package": "com.aiverse.notify"
-  }
-]
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "demo.memory",
+      "name": {
+        "zh-cn": "记忆管理",
+        "en": "Memory"
+      },
+      "description": {
+        "zh-cn": "在设置中管理现有的全局与项目记忆，直接读写 ~/.aicode/memory 与工作区 .aicode/memory。",
+        "en": "Manage existing global and project memories in Settings by reading and writing ~/.aicode/memory and the workspace .aicode/memory."
+      },
+      "author": "demo",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.0.1",
+      "license": "MIT",
+      "tags": [
+        "ui"
+      ],
+      "lastUpdate": 1794810513833
+    },
+    {
+      "id": "demo.ssh-manager",
+      "name": {
+        "default": "SSH Manager",
+        "zh-cn": "SSH 管理",
+        "en": "SSH Manager"
+      },
+      "description": {
+        "default": "Resident demo plugin: connects enabled SSH servers at app startup and exposes status/exec tools to the AI.",
+        "zh-cn": "常驻示例插件：App 启动时连接启用的 SSH 服务器，并向 AI 提供状态查看与远程命令工具。"
+      },
+      "author": "demo",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.1.4",
+      "license": "MIT",
+      "tags": [
+        "ui",
+        "tool"
+      ],
+      "lastUpdate": 1794810513837
+    },
+    {
+      "id": "demo.chat-bridge",
+      "name": {
+        "default": "Chat Bridge",
+        "zh-cn": "对话桥"
+      },
+      "description": {
+        "default": "A demo chat page for sending instructions to the AI and receiving replies. It shows the message loop and permission approval flow used by QQ/WeChat bot bridges.",
+        "zh-cn": "演示给 AI 下达指令、接收回复并在网页内处理工具授权的对话界面，可作为 QQ / 微信机器人接入的消息回路示例。"
+      },
+      "author": "demo",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.2.0",
+      "license": "MIT",
+      "tags": [
+        "ui"
+      ],
+      "lastUpdate": 1794810513842
+    },
+    {
+      "id": "demo.gallery",
+      "name": {
+        "zh-cn": "UI与配置演示",
+        "en": "UI & Config Demo"
+      },
+      "description": {
+        "zh-cn": "演示插件专属配置页面（configPage）、设置页/侧栏/顶栏槽位入口及宿主 Vue 组件库，支持配置的读取与持久化保存。",
+        "en": "Demonstrates plugin configuration page (configPage), settings/drawer/header slots and host Vue UI components with persistence."
+      },
+      "author": "demo",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.1.0",
+      "license": "MIT",
+      "tags": [
+        "ui"
+      ],
+      "lastUpdate": 1794810513845
+    },
+    {
+      "id": "demo.capabilities",
+      "name": {
+        "default": "Capability Demo",
+        "zh-cn": "能力演示"
+      },
+      "description": {
+        "default": "Demo plugin for conversation tips and plugin-level Shizuku permission.",
+        "zh-cn": "演示对话内提示条、插件级 Shizuku 授权、会话输入框写入 API 与文件/选区动作入口：可在插件配置页直接触发，也可以让 AI 调用两个演示工具。"
+      },
+      "author": "demo",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.0.0",
+      "license": "MIT",
+      "tags": [
+        "ui",
+        "tool"
+      ],
+      "lastUpdate": 1794810513852
+    },
+    {
+      "id": "demo.background-approval",
+      "name": {
+        "default": "Background Approval",
+        "zh-cn": "后台审批"
+      },
+      "description": {
+        "default": "Shows a floating ball while AiCode is in the background and expands it into an approval panel when the AI needs permission. Foreground requests are passed straight back to the in-app dialog.",
+        "zh-cn": "AiCode 在后台时显示悬浮球；AI 需要授权时展开审批面板。App 在前台时直接交回应用内确认框，不阻塞审批。"
+      },
+      "author": "demo",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.1.1",
+      "license": "MIT",
+      "tags": [
+        "other"
+      ],
+      "lastUpdate": 1794810513857
+    },
+    {
+      "id": "community.demo-kit",
+      "name": {
+        "default": "Demo Kit",
+        "zh-cn": "插件演示套件"
+      },
+      "description": {
+        "default": "A demo plugin with a skill, a read-only sub-agent, a structured workspace tool, three AI tools, a read-only lifecycle hook and a writable hook that denies .env access.",
+        "zh-cn": "演示插件系统的完整能力：一个技能、一个只读审查子代理、一个带结构化页面的项目工具、三个 AI 工具、一个只读生命周期 Hook，以及一个拒绝 .env 访问的可写 Hook。"
+      },
+      "author": "community",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.2.0",
+      "license": "MIT",
+      "tags": [
+        "tool",
+        "agent",
+        "skill"
+      ],
+      "lastUpdate": 1794810513861
+    },
+    {
+      "id": "community.dev-tools",
+      "name": {
+        "default": "Dev Tools",
+        "zh-cn": "开发工具"
+      },
+      "description": {
+        "default": "Build and clean the current Flutter or Android project.",
+        "zh-cn": "为当前 Flutter / Android 项目提供构建与清理工具。"
+      },
+      "author": "community",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.1.1",
+      "license": "MIT",
+      "tags": [
+        "tool"
+      ],
+      "lastUpdate": 1794810513866
+    }
+  ]
+}
