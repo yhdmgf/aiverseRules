@@ -1,0 +1,56 @@
+[Unit]
+Description=AiVerse 插件商店人工审核后端
+Documentation=https://github.com/yhdmgf/aiverserules
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 部署目录：把编译好的二进制放到 /opt/aiverse-store/
+WorkingDirectory=/opt/aiverse-store
+ExecStart=/opt/aiverse-store/store-backend
+Restart=on-failure
+RestartSec=5
+
+# 运行用户（建议专用低权限账号；数据目录归属该用户）
+User=store
+Group=store
+
+# ---- 凭据：全部来自环境变量，绝不写入本文件或代码 ----
+# 推荐用 systemd 凭据/EnvironmentFile（文件权限 0600，仅 store 可读）
+# /opt/aiverse-store/secrets.env 内容示例（占位，勿填真实值）：
+#   STORE_ADMIN_USER=<from-env>
+#   STORE_ADMIN_PASS_HASH=<from-env>   # bcrypt，见 README 生成方法
+#   STORE_GH_TOKEN=<from-env>          # 需 yhdmgf/aiverserules 写权限
+EnvironmentFile=/opt/aiverse-store/secrets.env
+
+# 非凭据配置（可按需覆盖）
+Environment=STORE_LISTEN=127.0.0.1:8088
+Environment=STORE_DATA_DIR=/opt/aiverse-store/data
+Environment=STORE_GH_OWNER=yhdmgf
+Environment=STORE_GH_REPO=aiverserules
+Environment=STORE_GH_BRANCH=main
+
+# 安全加固
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/opt/aiverse-store/data
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+# 日志到 stdout/stderr，由 journald 收集
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=store-backend
+
+[Install]
+WantedBy=multi-user.target
