@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	maxUploadSize   = 16 << 20 // 整包上限 16MB
+	maxUploadSize   = 10 << 20 // 整包上限 10MB
 	maxFileInZip    = 2 << 20  // 包内单文件上限 2MB
 	uploadFormField = "file"
 )
@@ -37,7 +37,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// 用 http.MaxBytesReader 硬限制请求体大小（略高于整包上限，留出 multipart 开销）
 	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize+1<<20)
 	if err := r.ParseMultipartForm(maxUploadSize + 1<<20); err != nil {
-		writeErr(w, http.StatusBadRequest, "请求体过大或格式错误（整包上限 16MB）")
+		writeErr(w, http.StatusBadRequest, "请求体过大或格式错误（整包上限 10MB）")
 		return
 	}
 
@@ -62,7 +62,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if header.Size > maxUploadSize {
 		s.uploadRL.Fail(ip)
-		writeErr(w, http.StatusRequestEntityTooLarge, "整包超过 16MB 上限")
+		writeErr(w, http.StatusRequestEntityTooLarge, "整包超过 10MB 上限")
 		return
 	}
 
@@ -74,7 +74,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if int64(len(data)) > maxUploadSize {
 		s.uploadRL.Fail(ip)
-		writeErr(w, http.StatusRequestEntityTooLarge, "整包超过 16MB 上限")
+		writeErr(w, http.StatusRequestEntityTooLarge, "整包超过 10MB 上限")
 		return
 	}
 
@@ -169,7 +169,7 @@ func validateZip(data []byte) (*Manifest, error) {
 		}
 		totalUncompressed += int64(f.UncompressedSize64)
 		if totalUncompressed > maxUploadSize {
-			return nil, fmt.Errorf("包解压后总大小超过 16MB 上限")
+			return nil, fmt.Errorf("包解压后总大小超过 10MB 上限")
 		}
 
 		// —— 根目录 plugin.json ——

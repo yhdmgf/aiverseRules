@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="referrer" content="no-referrer">
+  <meta name="theme-color" content="#5468ff">
+  <title>插件商店 · 审核后台</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <!-- 登录视图 -->
+  <div id="login-view" class="view login-view">
+    <form id="login-form" class="card login-card">
+      <div class="brand-mark"><img src="logo.png" alt="AiVerse" class="brand-img"></div>
+      <h1 class="login-title">插件商店 · 审核后台</h1>
+      <p class="login-sub">登录以审核并发布插件到商店</p>
+      <label>
+        <span>用户名</span>
+        <input type="text" id="login-user" name="username" autocomplete="username" required>
+      </label>
+      <label>
+        <span>密码</span>
+        <input type="password" id="login-pass" name="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" id="login-btn">登录</button>
+      <p id="login-error" class="error" hidden></p>
+      <p id="login-success" class="success" hidden></p>
+    </form>
+  </div>
+
+  <!-- 审核视图 -->
+  <div id="admin-view" class="view" hidden>
+    <header class="topbar">
+      <div class="topbar-brand">
+        <div class="topbar-logo"><img src="logo.png" alt="AiVerse" class="brand-img"></div>
+        <span class="topbar-name">AiVerse 插件商店</span>
+      </div>
+      <div class="topbar-right">
+        <span id="current-user" class="muted"></span>
+        <button id="logout-btn" class="btn btn-ghost">退出</button>
+      </div>
+    </header>
+
+    <!-- 流程说明（模仿官网 hero + features） -->
+    <section class="hero">
+      <h1 class="hero-title">插件审核与发布</h1>
+      <p class="hero-tagline">
+        开发者上传的插件会进入待审核队列；由管理员人工检查包安全与内容质量，
+        <strong>审核通过后才会发布到商店仓库</strong>，供所有用户搜索与安装。
+        以下是当前待处理与已完成的审核任务。
+      </p>
+
+      <div class="flow">
+        <div class="flow-step">
+          <span class="flow-num">1</span>
+          <div class="flow-body">
+            <b>上传插件</b>
+            <span>开发者在 AiVerse 插件管理中打包并上传 <code>plugin.zip</code></span>
+          </div>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-step">
+          <span class="flow-num">2</span>
+          <div class="flow-body">
+            <b>人工审核</b>
+            <span>管理员在此检查包结构与权限，通过或拒绝并说明原因</span>
+          </div>
+        </div>
+        <div class="flow-arrow" aria-hidden="true">→</div>
+        <div class="flow-step flow-step-final">
+          <span class="flow-num">3</span>
+          <div class="flow-body">
+            <b>发布上架</b>
+            <span>审核通过后自动写入仓库索引，用户即可搜索安装</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="pending">待审核 <span id="count-pending" class="badge">0</span></button>
+      <button class="tab" data-tab="done">已审核 <span id="count-done" class="badge">0</span></button>
+    </nav>
+
+    <main id="list" class="list">
+      <p class="muted loading">加载中…</p>
+    </main>
+
+    <!-- 拒绝原因弹窗 -->
+    <dialog id="reject-dialog">
+      <form method="dialog" id="reject-form" class="card">
+        <h2>拒绝插件</h2>
+        <p id="reject-target" class="muted"></p>
+        <label>
+          <span>拒绝原因（将写入仓库 rejected/&lt;id&gt;.txt 供上传者查看）</span>
+          <textarea id="reject-reason" rows="4" placeholder="例如：包含未声明的可执行文件"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="reject-cancel" class="btn btn-ghost">取消</button>
+          <button type="submit" id="reject-confirm" class="btn btn-danger">确认拒绝</button>
+        </div>
+      </form>
+    </dialog>
+  </div>
+
+  <script src="review.js"></script>
+</body>
+</html>

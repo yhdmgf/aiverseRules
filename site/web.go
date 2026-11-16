@@ -15,6 +15,11 @@ var webFS embed.FS
 // serveWebAssets 服务 /admin 下的前端资源。
 // /admin 或 /admin/ 返回 index.html；其它路径按静态文件返回。
 func serveWebAssets(w http.ResponseWriter, r *http.Request) {
+	// 无尾斜杠时重定向到带斜杠的路径，保证前端相对路径（style.css/api/*）基准正确
+	if r.URL.Path == "/admin" {
+		http.Redirect(w, r, "/admin/", http.StatusMovedPermanently)
+		return
+	}
 	// 去掉 /admin 前缀，得到相对路径
 	rel := strings.TrimPrefix(r.URL.Path, "/admin")
 	rel = strings.TrimPrefix(rel, "/")

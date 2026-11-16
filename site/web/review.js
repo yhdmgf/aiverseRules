@@ -74,16 +74,21 @@
     var password = document.getElementById('login-pass').value;
     api('/api/login', { method: 'POST', body: { username: username, password: password } })
       .then(function (data) {
-        showAdmin(data.user || username);
-        load();
+        var ok = document.getElementById('login-success');
+        ok.textContent = '✓ 登录成功，正在进入审核后台…';
+        ok.hidden = false;
+        setTimeout(function () {
+          showAdmin(data.user || username);
+          load();
+        }, 700);
       })
       .catch(function (err) {
         loginError.textContent = err.message;
         loginError.hidden = false;
       })
       .finally(function () {
-        loginBtn.disabled = false;
         document.getElementById('login-pass').value = '';
+        setTimeout(function () { loginBtn.disabled = false; }, 700);
       });
   });
 

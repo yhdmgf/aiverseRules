@@ -76,7 +76,7 @@ func newMux(s *Store) *http.ServeMux {
 	mux.Handle("/admin", http.HandlerFunc(s.handleAdminPage))
 	mux.Handle("/admin/", http.HandlerFunc(s.handleAdminPage))
 
-	// 公开接口
+	// 公开接口（/api/ 前缀，nginx /api/ 反代到这里）
 	mux.HandleFunc("/api/upload", s.handleUpload) // 上传（自身限流）
 	mux.HandleFunc("/api/login", s.handleLogin)   // 登录（自身限流）
 
@@ -85,6 +85,14 @@ func newMux(s *Store) *http.ServeMux {
 	mux.Handle("/api/approve", s.requireSession(http.HandlerFunc(s.handleApprove)))
 	mux.Handle("/api/reject", s.requireSession(http.HandlerFunc(s.handleReject)))
 	mux.Handle("/api/logout", s.requireSession(http.HandlerFunc(s.handleLogout)))
+
+	// 旧 /admin/api/ 前缀保留向后兼容
+	mux.HandleFunc("/admin/api/upload", s.handleUpload)
+	mux.HandleFunc("/admin/api/login", s.handleLogin)
+	mux.Handle("/admin/api/queue", s.requireSession(http.HandlerFunc(s.handleQueue)))
+	mux.Handle("/admin/api/approve", s.requireSession(http.HandlerFunc(s.handleApprove)))
+	mux.Handle("/admin/api/reject", s.requireSession(http.HandlerFunc(s.handleReject)))
+	mux.Handle("/admin/api/logout", s.requireSession(http.HandlerFunc(s.handleLogout)))
 
 	return mux
 }
