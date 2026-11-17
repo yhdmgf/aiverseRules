@@ -19,7 +19,25 @@
         "ui"
       ],
       "lastUpdate": 1794918592040
+    },
+    {
+      "id": "aiverse.desktop-pet",
+      "name": {
+        "default": "Desktop Pet",
+        "zh-CN": "桌面宠物"
+      },
+      "description": {
+        "default": "A draggable, interactive desktop pet that reacts to AI run status. Supports two sprite forms (Deepy the whale and the whale girl). Long press for the menu; size and display timing are configurable.",
+        "zh-CN": "可拖拽、可点击互动的桌面宠物：跟随 AI 运行状态变化，支持 Deepy 鲸与鲸娘两种形态动画，长按打开菜单，可在配置页调整大小与显示时机。"
+      },
+      "author": "aiverse",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.0.5",
+      "license": "GPL-3.0-or-later",
+      "tags": [
+        "other"
+      ],
+      "lastUpdate": 1794930069376
     }
-  ],
-  "generated_at": "2026-11-17T13:11:52Z"
+  ]
 }
