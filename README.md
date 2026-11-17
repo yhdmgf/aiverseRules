@@ -31,14 +31,9 @@ https://github.com/yhdmgf/aiverserules
 
 | 插件 | 版本 | 分类 | 简介 |
 |---|---|---|---|
-| `demo.chat-bridge` | 1.2.0 | 对话桥 | 演示给 AI 下达指令、接收回复并在网页内处理工具授权的对话界面，可作为 QQ / 微信机器人接入的消息回路示例。 |
-| `demo.gallery` | 1.1.0 | UI 与配置演示 | 演示插件专属配置页面（`configPage`）、设置页 / 侧栏 / 顶栏槽位入口及宿主 Vue 组件库，支持配置的读取与持久化保存。 |
-| `demo.capabilities` | 1.0.0 | 能力演示 | 演示对话内提示条、插件级 Shizuku 授权、会话输入框写入 API 与文件 / 选区动作入口：可在插件配置页直接触发，也可以让 AI 调用两个演示工具。 |
-| `demo.background-approval` | 1.1.1 | 后台审批 | AiVerse 在后台时显示悬浮球；AI 需要授权时展开审批面板。App 在前台时直接交回应用内确认框，不阻塞审批。 |
-| `community.demo-kit` | 1.2.0 | 插件演示套件 | 演示插件系统的完整能力：一个技能、一个只读审查子代理、一个带结构化页面的项目工具、三个 AI 工具、一个只读生命周期 Hook，以及一个拒绝 `.env` 访问的可写 Hook。 |
-| `community.dev-tools` | 1.1.1 | 开发工具 | 为当前 Flutter / Android 项目提供构建与清理工具。 |
+|  | 1.0.0 | 桌面宠物 | 可拖拽、可点击互动的桌面宠物：跟随 AI 运行状态变化，支持 Deepy 鲸与鲸娘两种形态动画，长按打开菜单，可在配置页调整大小与显示时机。 |
 
-全部插件以 MIT 协议开源。
+全部插件以 GPL-3.0-or-later 协议开源（素材来源见插件包内 README）。
 
 ## 仓库结构
 
@@ -46,7 +41,7 @@ https://github.com/yhdmgf/aiverserules
 aiverserules/
 ├── index.json          # 插件索引：名称 / 简介 / 版本 / 分类 / 更新时间
 ├── packages/           # 插件包，文件名 {id}_{version}.zip
-│   ├── demo.chat-bridge_1.2.0.zip
+│   ├── aiverse.desktop-pet_1.0.0.zip
 │   └── …
 └── site/               # 插件商店审核后端源码（Go 后端 + 内嵌前端），负责插件包的安全审核与发布，详见 [`site/README.md`](site/README.md)
 ```
