@@ -23,8 +23,8 @@
     {
       "id": "demo.gallery",
       "name": {
-        "default": "UI \u0026 Config Demo",
-        "en": "UI \u0026 Config Demo",
+        "default": "UI & Config Demo",
+        "en": "UI & Config Demo",
         "zh-cn": "UI与配置演示"
       },
       "description": {
@@ -133,7 +133,7 @@
       "license": "SEE LICENSE",
       "tags": [
         "tool",
-        "hook"
+        "other"
       ],
       "lastUpdate": 1794883369896
     }
