@@ -2,24 +2,23 @@
   "schema_version": 1,
   "plugins": [
     {
-      "id": "dsh.purge",
+      "id": "aiverse.desktop-pet",
       "name": {
-        "default": "DSH Purge",
-        "zh-CN": "破甲注入器"
+        "default": "Desktop Pet",
+        "zh-CN": "桌面宠物"
       },
       "description": {
-        "default": "Ship the DeepSeek Harness jailbreak prompt library into AiCode: browse and edit the persona prompt plus six red-team role prompts, inject them into AiCode custom prompts or a DSH prompt-inject.md, and install the bundled red-team skill pack.",
-        "zh-CN": "把 DeepSeek Harness 破甲插件（dsh-purge）的提示词库搬进 AiCode：浏览、编辑小码酱破甲提示词与六个红队角色提示词，一键注入到 AiCode 自定义提示词或 DSH 的 prompt-inject.md，并安装随包的红队技能包。"
+        "default": "A draggable, interactive desktop pet that reacts to AI run status. Supports two sprite forms (Deepy the whale and the whale girl). Long press for the menu; size and display timing are configurable.",
+        "zh-CN": "可拖拽、可点击互动的桌面宠物：跟随 AI 运行状态变化，支持 Deepy 鲸与鲸娘两种形态动画，长按打开菜单，可在配置页调整大小与显示时机。"
       },
-      "author": "dsh",
+      "author": "aiverse",
       "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.0.1",
-      "license": "SEE LICENSE",
+      "version": "1.0.0",
+      "license": "GPL-3.0-or-later",
       "tags": [
-        "tool",
-        "other"
+        "ui"
       ],
-      "lastUpdate": 1794910626000
+      "lastUpdate": 1794918592040
     }
   ]
 }
