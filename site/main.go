@@ -80,10 +80,10 @@ func newMux(s *Store) *http.ServeMux {
 	mux.Handle("/admin/", http.HandlerFunc(s.handleAdminPage))
 
 	// 公开接口（/api/ 前缀，nginx /api/ 反代到这里）
-	mux.HandleFunc("/api/captcha/challenge", s.handleCaptchaChallenge) // 下发滑块挑战
-	mux.HandleFunc("/api/captcha/verify", s.handleCaptchaVerify)       // 校验滑块并签发一次性 token
+	mux.HandleFunc("/api/captcha/challenge", s.handleCaptchaChallenge) // 下发算术题挑战
+	mux.HandleFunc("/api/captcha/verify", s.handleCaptchaVerify)       // 校验算术题并签发一次性 token
 	mux.HandleFunc("/api/upload", s.handleUpload)                      // 上传（自身限流）
-	mux.HandleFunc("/api/login", s.handleLogin)                        // 登录（IP + 账号 双维度限流 + 滑块 + TOTP）
+	mux.HandleFunc("/api/login", s.handleLogin)                        // 登录（IP + 账号 双维度限流 + 算术验证 + TOTP）
 
 	// 需登录的管理接口
 	mux.Handle("/api/queue", s.requireSession(http.HandlerFunc(s.handleQueue)))

@@ -20,7 +20,7 @@ func (s *Store) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 // handleLogin 处理管理员登录。
 // 凭据来自环境变量（STORE_ADMIN_USER / STORE_ADMIN_PASS_HASH / STORE_ADMIN_TOTP_SECRET），不硬编码。
 //
-// 校验顺序：IP 锁 → 账号锁 → 滑块 captcha_token → 用户名/密码 → TOTP 动态码。
+// 校验顺序：IP 锁 → 账号锁 → 算术 captcha_token → 用户名/密码 → TOTP 动态码。
 // 任一步失败都会累计 IP + 账号 两个维度的失败计数；
 // 密码与 TOTP 均正确时才清零两个维度（满足“输对密码+TOTP 即解锁”）。
 func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -66,10 +66,10 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) 滑块人机验证：captcha_token 必须有效且未使用过
+	// 3) 算术人机验证：captcha_token 必须有效且未使用过
 	if !s.captcha.consume(req.CaptchaToken) {
 		s.recordLoginFailure(ip, req.Username)
-		log.Printf("[安全] 登录失败：滑块验证未通过（IP=%s，用户名=%q）", ip, req.Username)
+		log.Printf("[安全] 登录失败：算术验证未通过（IP=%s，用户名=%q）", ip, req.Username)
 		writeErr(w, http.StatusUnauthorized, "人机验证未通过，请重试")
 		return
 	}
@@ -264,7 +264,7 @@ func sanitizeGHErr(err error) string {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	// API 响应（尤其滑动验证 challenge/verify）禁止任何缓存，避免被 CDN/浏览器缓存导致挑战重放
+	// API 响应（尤其算术验证 challenge/verify）禁止任何缓存，避免被 CDN/浏览器缓存导致挑战重放
 	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
 	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(status)

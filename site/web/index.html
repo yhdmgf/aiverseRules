@@ -30,17 +30,14 @@
       </label>
       <div id="captcha-box">
         <div class="captcha-head">
-          <span class="captcha-label">滑动验证</span>
+          <span class="captcha-label">人机验证</span>
           <button type="button" id="captcha-refresh" class="captcha-refresh" title="换一个">换一个</button>
         </div>
-        <div id="captcha-puzzle" class="captcha-puzzle">
-          <div id="captcha-gap" class="captcha-gap"></div>
-          <div id="captcha-piece" class="captcha-piece"></div>
-        </div>
-        <div id="captcha-track" class="captcha-track">
-          <div id="captcha-fill" class="captcha-fill"></div>
-          <span id="captcha-hint" class="captcha-hint">按住滑块拖动，对齐缺口</span>
-          <div id="captcha-handle" class="captcha-handle">»</div>
+        <div class="captcha-question-row">
+          <span id="captcha-question" class="captcha-question">加载中…</span>
+          <span class="captcha-equals">=</span>
+          <input type="text" id="captcha-answer" class="captcha-answer" inputmode="numeric"
+            autocomplete="off" maxlength="4" placeholder="?" aria-label="验证码答案">
         </div>
         <p id="captcha-status" class="captcha-status" hidden></p>
       </div>

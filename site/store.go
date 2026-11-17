@@ -49,7 +49,7 @@ type Store struct {
 	loginRL    *rateLimiter // IP 维度登录限流（data/ipban.json）
 	accountRL  *rateLimiter // 账号维度登录限流（data/accountban.json）
 	uploadRL   *rateLimiter
-	captcha    *captchaStore // 滑块验证挑战与一次性 token（内存）
+	captcha    *captchaStore // 算术验证挑战与一次性 token（内存）
 	publisher  *publisher
 	ghEnabled  bool
 	noTOTP     bool // 未配置 STORE_ADMIN_TOTP_SECRET 时为 true，登录跳过 TOTP 校验
@@ -77,7 +77,7 @@ func NewStore(cfg Config) (*Store, error) {
 	// 登录限流（账号维度）：1 分钟内同账号失败 3 次锁 30 分钟
 	s.accountRL = newAccountRateLimiter(cfg.DataDir)
 	s.accountRL.cleanupExpired()
-	// 滑块验证（登录前人机校验）
+	// 算术验证（登录前人机校验）
 	s.captcha = newCaptchaStore()
 	// 上传限流：同 IP 5 分钟内最多 10 次
 	s.uploadRL = newRateLimiter(filepath.Join(cfg.DataDir, "upload_ratelimit.json"), 10, 5*time.Minute)

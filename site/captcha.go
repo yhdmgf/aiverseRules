@@ -1,24 +1,25 @@
 package main
 
-// 滑动人机验证（本地自实现，不依赖任何第三方/Cloudflare）。
+// 算术人机验证（本地自实现，不依赖任何第三方/Cloudflare）。
 //
 // 流程：
-//   1) 前端先 GET /api/captcha/challenge 拿到一个 id 与缺口目标相对位置 bg。
-//   2) 用户把拼图块拖到正确位置后，前端 POST /api/captcha/verify 提交 id 与落点相对位置 x。
-//   3) 落点与真实目标位置误差在容差内则签发一次性 token（默认 60s 有效），登录时携带。
+//   1) 前端先 GET /api/captcha/challenge 拿到一个 id 与算术题 question（如 "3+5"）。
+//   2) 用户填写答案后，前端 POST /api/captcha/verify 提交 id 与 answer。
+//   3) 答案正确则签发一次性 token（默认 60s 有效），登录时携带。
 //
 // 安全设计：
 //   - 挑战与 token 都存内存（重启即失效，无需持久化），带过期时间。
 //   - 每个 challenge 只能 verify 一次；token 校验通过后立即删除，防重放。
-//   - 校验用常量时间比较，避免时序侧信道。
+//   - 答案用常量时间比较，避免时序侧信道。
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
 	"encoding/json"
 	"log"
-	"math"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -26,13 +27,12 @@ import (
 const (
 	captchaChallengeTTL = 5 * time.Minute  // 挑战有效期
 	captchaTokenTTL     = 60 * time.Second // 通过后签发的 token 有效期
-	captchaTolerance    = 0.03             // 落点容差（相对位置 ±0.03）
 	captchaMaxAge       = 1024             // 内存中最多保留的挑战/Token 数（防内存膨胀）
 )
 
-// captchaEntry 是一次滑块挑战的记录。
+// captchaEntry 是一次算术题挑战的记录。
 type captchaEntry struct {
-	Target    float64   // 拼图块应被拖到的目标相对位置（0~1）
+	Answer    string    // 正确答案（十进制字符串）
 	CreatedAt time.Time // 创建时间，用于过期清理
 }
 
@@ -55,31 +55,66 @@ func newCaptchaStore() *captchaStore {
 	}
 }
 
-// newChallenge 生成一次新的滑块挑战，返回缺口目标相对位置 bg。
-// 缺口目标随机落在 [0.25, 0.75]，避开两端极端值，给前端留出可视拖动范围。
-// 前端把缺口画在 bg，用户把拼图块拖到缺口、提交 x==bg 即可；服务端以同一 bg 校验。
-func (cs *captchaStore) newChallenge() (id string, bg float64, err error) {
-	bg, err = randFloat()
-	if err != nil {
-		return "", 0, err
+// randInt 返回 [lo,hi] 范围内的密码学随机整数。
+func randInt(lo, hi int) (int, error) {
+	if hi <= lo {
+		return lo, nil
 	}
-	bg = 0.25 + bg*0.5
-
-	id, err = randomToken(16)
+	n, err := randomUint32()
 	if err != nil {
-		return "", 0, err
+		return 0, err
 	}
+	return lo + int(n%uint32(hi-lo+1)), nil
+}
 
+// newChallenge 生成一次新的算术题挑战，返回 id 与题目文本（如 "7+5"）。
+// 两个操作数落在 [2,9]，加减法都保证结果非负，避免出现负数干扰用户。
+func (cs *captchaStore) newChallenge() (id string, question string, err error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.evictLocked()
-	cs.challenges[id] = &captchaEntry{Target: bg, CreatedAt: time.Now()}
-	return id, bg, nil
+
+	a, err := randInt(2, 9)
+	if err != nil {
+		return "", "", err
+	}
+	b, err := randInt(2, 9)
+	if err != nil {
+		return "", "", err
+	}
+
+	var answer int
+	if a >= b {
+		// 一半概率出加法，一半概率出减法（结果非负）
+		coin, err2 := randInt(0, 1)
+		if err2 != nil {
+			return "", "", err2
+		}
+		if coin == 0 {
+			question = strconv.Itoa(a) + "+" + strconv.Itoa(b)
+			answer = a + b
+		} else {
+			question = strconv.Itoa(a) + "-" + strconv.Itoa(b)
+			answer = a - b
+		}
+	} else {
+		// a<b 时只出加法，避免负数
+		question = strconv.Itoa(a) + "+" + strconv.Itoa(b)
+		answer = a + b
+	}
+
+	id, err = randomToken(16)
+	if err != nil {
+		return "", "", err
+	}
+
+	cs.challenges[id] = &captchaEntry{Answer: strconv.Itoa(answer), CreatedAt: time.Now()}
+	return id, question, nil
 }
 
-// verify 校验滑块落点：成功则签发一次性 token 并消费该挑战。
+// verify 校验算术题答案：成功则签发一次性 token 并消费该挑战。
 // 任何一步失败都不暴露具体原因（返回 ok=false），避免给攻击者提供探测信息。
-func (cs *captchaStore) verify(id string, x float64) (ok bool, token string) {
+func (cs *captchaStore) verify(id string, answer string) (ok bool, token string) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.evictLocked()
@@ -91,7 +126,10 @@ func (cs *captchaStore) verify(id string, x float64) (ok bool, token string) {
 	// 无论成功与否都消费掉这次挑战，防同一 id 反复试探
 	delete(cs.challenges, id)
 
-	if math.Abs(x-e.Target) > captchaTolerance {
+	// 答案做基本规范化后用常量时间比较，避免时序侧信道
+	given := normalizeAnswer(answer)
+	if len(given) == 0 || len(given) != len(e.Answer) ||
+		subtle.ConstantTimeCompare([]byte(given), []byte(e.Answer)) != 1 {
 		return false, ""
 	}
 
@@ -101,6 +139,24 @@ func (cs *captchaStore) verify(id string, x float64) (ok bool, token string) {
 	}
 	cs.tokens[tok] = &captchaToken{CreatedAt: time.Now()}
 	return true, tok
+}
+
+// normalizeAnswer 去除首尾空白，仅保留纯数字（非法输入返回空串）。
+func normalizeAnswer(s string) string {
+	start, end := 0, len(s)
+	for start < end && (s[start] == ' ' || s[start] == '\t') {
+		start++
+	}
+	for end > start && (s[end-1] == ' ' || s[end-1] == '\t') {
+		end--
+	}
+	s = s[start:end]
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return ""
+		}
+	}
+	return s
 }
 
 // consume 校验并消费一个登录 token：存在且未过期则返回 true（同时删除，防重放）。
@@ -153,15 +209,6 @@ func (cs *captchaStore) evictLocked() {
 	}
 }
 
-// randFloat 返回 [0,1) 的密码学随机小数。
-func randFloat() (float64, error) {
-	v, err := randomUint32()
-	if err != nil {
-		return 0, err
-	}
-	return float64(v) / float64(^uint32(0)), nil
-}
-
 // randomUint32 用 crypto/rand 生成一个密码学随机的 uint32。
 func randomUint32() (uint32, error) {
 	var b [4]byte
@@ -173,25 +220,25 @@ func randomUint32() (uint32, error) {
 
 // ---------- HTTP handlers ----------
 
-// handleCaptchaChallenge 下发一次滑块挑战。
-// 响应：{"ok":true,"id":"...","bg":<0~1>,"totp_required":<bool>}
+// handleCaptchaChallenge 下发一次算术题挑战。
+// 响应：{"ok":true,"id":"...","question":"7+5","totp_required":<bool>}
 // totp_required：服务端是否已配置 TOTP 密钥（未配置时前端不强制动态码，与登录降级逻辑一致）。
 func (s *Store) handleCaptchaChallenge(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
 		return
 	}
-	id, bg, err := s.captcha.newChallenge()
+	id, question, err := s.captcha.newChallenge()
 	if err != nil {
-		log.Printf("[错误] 生成滑块挑战失败: %v", err)
+		log.Printf("[错误] 生成算术题挑战失败: %v", err)
 		writeErr(w, http.StatusInternalServerError, "生成验证挑战失败")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "bg": bg, "totp_required": !s.noTOTP})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "id": id, "question": question, "totp_required": !s.noTOTP})
 }
 
-// handleCaptchaVerify 校验滑块落点并签发一次性登录 token。
-// 请求体：{"id":"...","x":<0~1>}
+// handleCaptchaVerify 校验算术题答案并签发一次性登录 token。
+// 请求体：{"id":"...","answer":"12"}
 // 响应：{"ok":true,"token":"..."} 或 {"ok":false}
 func (s *Store) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -199,18 +246,18 @@ func (s *Store) handleCaptchaVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		ID string  `json:"id"`
-		X  float64 `json:"x"`
+		ID     string `json:"id"`
+		Answer string `json:"answer"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false})
 		return
 	}
-	if req.ID == "" || !safeFilename(req.ID) || req.X < 0 || req.X > 1 || math.IsNaN(req.X) || math.IsInf(req.X, 0) {
+	if req.ID == "" || !safeFilename(req.ID) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false})
 		return
 	}
-	ok, token := s.captcha.verify(req.ID, req.X)
+	ok, token := s.captcha.verify(req.ID, req.Answer)
 	if !ok {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": false})
 		return

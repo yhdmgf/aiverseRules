@@ -74,7 +74,7 @@
     var totp = document.getElementById('login-totp').value.trim();
     var captchaToken = (window.getCaptchaToken ? window.getCaptchaToken() : '');
 
-    // 前端预校验：滑动验证已通过；动态码仅当服务端要求时校验 6 位
+    // 前端预校验：算术验证已通过；动态码仅当服务端要求时校验 6 位
     var totpRequired = !!(window.isTOTPRequired && window.isTOTPRequired());
     if (totpRequired && !/^\d{6}$/.test(totp)) {
       loginError.textContent = '请输入 6 位数字动态码';
@@ -83,7 +83,7 @@
       return;
     }
     if (!captchaToken) {
-      loginError.textContent = '请先完成滑动人机验证';
+      loginError.textContent = '请先完成人机验证';
       loginError.hidden = false;
       return;
     }
