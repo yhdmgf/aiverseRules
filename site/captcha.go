@@ -55,21 +55,15 @@ func newCaptchaStore() *captchaStore {
 	}
 }
 
-// newChallenge 生成一次新的滑块挑战，返回 challenge id 与缺口目标相对位置 bg。
-// 目标位置随机落在 [0.25, 0.75]，避开两端极端值，给前端留出可视拖动范围。
+// newChallenge 生成一次新的滑块挑战，返回缺口目标相对位置 bg。
+// 缺口目标随机落在 [0.25, 0.75]，避开两端极端值，给前端留出可视拖动范围。
+// 前端把缺口画在 bg，用户把拼图块拖到缺口、提交 x==bg 即可；服务端以同一 bg 校验。
 func (cs *captchaStore) newChallenge() (id string, bg float64, err error) {
-	target, err := randFloat()
+	bg, err = randFloat()
 	if err != nil {
 		return "", 0, err
 	}
-	target = 0.25 + target*0.5
-
-	bgRaw, err := randFloat()
-	if err != nil {
-		return "", 0, err
-	}
-	// 起始位与目标位错开，避免 bg==target 让前端出现"开局即正确"的退化情况
-	bg = math.Min(bgRaw, math.Max(0, target-0.15))
+	bg = 0.25 + bg*0.5
 
 	id, err = randomToken(16)
 	if err != nil {
@@ -79,7 +73,7 @@ func (cs *captchaStore) newChallenge() (id string, bg float64, err error) {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 	cs.evictLocked()
-	cs.challenges[id] = &captchaEntry{Target: target, CreatedAt: time.Now()}
+	cs.challenges[id] = &captchaEntry{Target: bg, CreatedAt: time.Now()}
 	return id, bg, nil
 }
 

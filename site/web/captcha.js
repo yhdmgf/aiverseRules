@@ -28,17 +28,23 @@
   var bg = 0;
   var dragging = false;
   var startX = 0;
-  var maxDrag = 1;
   var verified = false;
 
-  function setPiece(pct) {
-    var p = Math.max(0, Math.min(1, pct));
+  // 把手可动最大行程（px）
+  function maxX() {
+    return Math.max(1, (trackEl.clientWidth || 1) - HANDLE);
+  }
+
+  // 拼图块中心跟随把手实际像素位置，确保"拼图块中心 == 缺口中心"时提交的 x == 缺口 bg。
+  // 统一坐标系：元素中心相对轨道宽度的比例（与 CSS 的 left百分比 + translateX(-50%) 一致）。
+  function setPiece(p) {
+    p = Math.max(0, Math.min(1, p));
     var trackW = trackEl.clientWidth || 1;
-    var maxX = Math.max(0, trackW - HANDLE);
-    var x = maxX * p;
-    handleEl.style.left = x + 'px';
-    fillEl.style.width = (x + HANDLE) + 'px';
-    pieceEl.style.left = (p * 100) + '%';
+    var handleX = maxX() * p;      // 把手左边缘（px）
+    handleEl.style.left = handleX + 'px';
+    fillEl.style.width = (handleX + HANDLE) + 'px';
+    var pieceCenter = handleX + HANDLE / 2;   // 拼图块中心跟随把手
+    pieceEl.style.left = (pieceCenter / trackW * 100) + '%';
   }
 
   function setVerifiedUI() {
@@ -65,7 +71,7 @@
     box.classList.remove('is-dragging');
     handleEl.style.left = '0px';
     fillEl.style.width = HANDLE + 'px';
-    pieceEl.style.left = '0%';
+    setPiece(0);
     hintEl.textContent = '按住滑块拖动，对齐缺口';
   }
 
@@ -112,7 +118,6 @@
     if (!challengeId) { refreshChallenge(); return; }
     dragging = true;
     startX = (e.touches ? e.touches[0].clientX : e.clientX);
-    maxDrag = Math.max(1, (trackEl.clientWidth || 1) - HANDLE);
     box.classList.add('is-dragging');
     e.preventDefault();
   }
@@ -121,8 +126,8 @@
     if (!dragging) { return; }
     var clientX = (e.touches ? e.touches[0].clientX : e.clientX);
     var dx = clientX - startX;
-    var x = Math.max(0, Math.min(maxDrag, dx));
-    var p = x / maxDrag;
+    var x = Math.max(0, Math.min(maxX(), dx));
+    var p = x / maxX();
     setPiece(p);
     if (e.cancelable) { e.preventDefault(); }
   }
@@ -133,9 +138,9 @@
     box.classList.remove('is-dragging');
 
     var trackW = trackEl.clientWidth || 1;
-    var maxX = Math.max(1, trackW - HANDLE);
     var handleLeft = parseFloat(handleEl.style.left || '0');
-    var x = handleLeft / maxX; // 用户拖到的相对位置（0~1）
+    // 提交"拼图块中心相对轨道宽度"的比例，与后端缺口 bg 同一定义
+    var x = (handleLeft + HANDLE / 2) / trackW;
 
     verify(x).then(function (data) {
       if (data && data.ok && data.token) {

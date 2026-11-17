@@ -264,6 +264,9 @@ func sanitizeGHErr(err error) string {
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// API 响应（尤其滑动验证 challenge/verify）禁止任何缓存，避免被 CDN/浏览器缓存导致挑战重放
+	w.Header().Set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+	w.Header().Set("Pragma", "no-cache")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
