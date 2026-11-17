@@ -135,6 +135,19 @@ var (
 	semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 )
 
+// reservedAuthor 是官方保留的作者标识：插件作者不可用此名（防冒充官方）。
+// 精确匹配（不分大小写），不误伤 aiverse-test 等含 aiverse 但非官方的作者。
+const reservedAuthor = "aiverse"
+
+// idPublisher 从「发布者.插件名」格式的 id 里取发布者段（第一个 '.' 之前）。
+// authorOf 在 author 为空时会回退到这个值，故防冒充需一并校验。
+func idPublisher(id string) string {
+	if i := strings.Index(id, "."); i > 0 {
+		return id[:i]
+	}
+	return ""
+}
+
 // appLegalTags 是 APP 端 PluginTags.ALL 白名单（权威来源：
 // app/.../plugins/data/index/PluginIndexModels.kt 的 PluginTags.ALL）。
 // 写进 index.json 的 tags 必须全部落在此集合内，否则 APP 会判定「tags 含未知值」
@@ -213,6 +226,17 @@ func validateManifest(m *Manifest) error {
 	}
 	if !pluginIDPattern.MatchString(m.ID) {
 		return fmt.Errorf("插件 id 形如「发布者.插件名」（字母/数字/-/_），当前不合法: %q", m.ID)
+	}
+	// 防冒充官方：保留字 aiverse 不可用作作者身份。
+	// 两条冒充路径都堵住——
+	//   1) author 字段直接填 aiverse；
+	//   2) author 留空时 authorOf 会回退取 id 的发布者段，故发布者段也不能是 aiverse。
+	// 用精确匹配（不分大小写），不误伤 aiverse-test 等含 aiverse 但非官方的作者。
+	if strings.EqualFold(strings.TrimSpace(m.Author), reservedAuthor) {
+		return fmt.Errorf("author %q 为官方保留字，不可用作插件作者", reservedAuthor)
+	}
+	if publisher := idPublisher(m.ID); strings.EqualFold(publisher, reservedAuthor) {
+		return fmt.Errorf("插件 id 的发布者段 %q 为官方保留字，请换一个发布者名", publisher)
 	}
 	if !semverPattern.MatchString(m.Version) {
 		return fmt.Errorf("version 必须为 semver（如 1.2.0），当前不合法: %q", m.Version)
