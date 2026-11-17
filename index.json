@@ -193,6 +193,26 @@
         "agent"
       ],
       "lastUpdate": 1794884959546
+    },
+    {
+      "id": "jieapi.desktop-pet",
+      "name": {
+        "default": "Desktop Pet",
+        "zh-cn": "桌面宠物"
+      },
+      "description": {
+        "default": "A draggable, interactive desktop pet that reacts to AI run status. Long press for the menu; size and display timing are configurable.",
+        "zh-cn": "可拖拽、可点击互动的桌面宠物：跟随 AI 运行状态变化，长按打开菜单，可在配置页调整大小与显示时机。"
+      },
+      "author": "jieapi",
+      "repository": "https://github.com/jieapi/aicode-plugin-desktop-pet",
+      "version": "1.0.0",
+      "license": "MIT",
+      "tags": [
+        "ui",
+        "other"
+      ],
+      "lastUpdate": 1794885747418
     }
   ]
 }
