@@ -141,6 +141,7 @@ func (cs *captchaStore) verify(id string, answer string) (ok bool, token string)
 	return true, tok
 }
 
+
 // normalizeAnswer 去除首尾空白，仅保留纯数字（非法输入返回空串）。
 func normalizeAnswer(s string) string {
 	start, end := 0, len(s)
@@ -178,6 +179,23 @@ func (cs *captchaStore) consume(token string) bool {
 		return false
 	}
 	return true
+}
+
+// peek 仅校验 token 是否有效（存在且未过期），不消费、不删除。
+// 用于凭据校验阶段：密码/动态码错误时保留 token，让用户无需重做人机验证即可重试。
+// token 的真正消费（防重放）只在凭据全部正确、即将建立会话时由 consume 执行。
+func (cs *captchaStore) peek(token string) bool {
+	if token == "" || !safeFilename(token) {
+		return false
+	}
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	cs.evictLocked()
+	t, ok := cs.tokens[token]
+	if !ok {
+		return false
+	}
+	return time.Since(t.CreatedAt) <= captchaTokenTTL
 }
 
 // evictLocked 清理过期的挑战与 token，并在总量超限时丢弃最早的条目防内存膨胀。

@@ -54,7 +54,7 @@ func loadConfig() Config {
 		GHOwner:       envOr("STORE_GH_OWNER", "yhdmgf"),
 		GHRepo:        envOr("STORE_GH_REPO", "aiverserules"),
 		GHBranch:      envOr("STORE_GH_BRANCH", "main"),
-		SessionTTL:    12 * time.Hour,
+		SessionTTL:    720 * time.Hour, // 30天
 	}
 	if v := os.Getenv("STORE_SESSION_TTL_HOURS"); v != "" {
 		if h, err := strconv.Atoi(v); err == nil && h > 0 {

@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"log"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -41,40 +42,48 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ip := clientIP(r)
+	skipRL := isLoopbackIP(ip) || s.isWhitelistedIP(ip)
 
 	// 1) IP 维度锁定短路（仅凭 IP 就拒绝，不泄露账号相关信息）
-	if locked, until := s.loginRL.BlockedUntil(ip); locked {
-		log.Printf("[安全] 登录拒绝：IP 处于锁定期（IP=%s）", ip)
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{
-			"ok":           false,
-			"error":        "失败次数过多，请稍后再试",
-			"locked":       true,
-			"locked_until": until.UTC().Format(time.RFC3339),
-		})
-		return
+	//    本地回环地址（127.0.0.1/::1）与白名单 IP（环境变量 STORE_IP_WHITELIST，不写进代码/仓库）
+	//    跳过 IP/账号锁检查与失败累计：便于本地调试与管理员固定 IP 不被限流误锁。
+	//    真实用户经 Nginx 反代，clientIP() 取 X-Forwarded-For 首个公网 IP，不在白名单则照常限流。
+	if !skipRL {
+		if locked, until := s.loginRL.BlockedUntil(ip); locked {
+			log.Printf("[安全] 登录拒绝：IP 处于锁定期（IP=%s）", ip)
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"ok":           false,
+				"error":        "失败次数过多，请稍后再试",
+				"locked":       true,
+				"locked_until": until.UTC().Format(time.RFC3339),
+			})
+			return
+		}
+
+		// 2) 账号维度锁定短路
+		if locked, until := s.accountLock(req.Username); locked {
+			log.Printf("[安全] 登录拒绝：账号处于锁定期（用户名=%q，IP=%s）", req.Username, ip)
+			writeJSON(w, http.StatusTooManyRequests, map[string]any{
+				"ok":           false,
+				"error":        "失败次数过多，请稍后再试",
+				"locked":       true,
+				"locked_until": until.UTC().Format(time.RFC3339),
+			})
+			return
+		}
 	}
 
-	// 2) 账号维度锁定短路
-	if locked, until := s.accountLock(req.Username); locked {
-		log.Printf("[安全] 登录拒绝：账号处于锁定期（用户名=%q，IP=%s）", req.Username, ip)
-		writeJSON(w, http.StatusTooManyRequests, map[string]any{
-			"ok":           false,
-			"error":        "失败次数过多，请稍后再试",
-			"locked":       true,
-			"locked_until": until.UTC().Format(time.RFC3339),
-		})
-		return
-	}
-
-	// 3) 算术人机验证：captcha_token 必须有效且未使用过
-	if !s.captcha.consume(req.CaptchaToken) {
-		s.recordLoginFailure(ip, req.Username)
+	// 3) 算术人机验证：仅校验 token 有效性（peek，不消费）。
+	//    无效/缺失则直接拒绝，让用户先完成验证；有效则继续校验凭据，token 留到最后成功时才消费，
+	//    这样密码/动态码输错时 token 仍有效，用户改凭据重试即可，无需重做算术题。
+	if !s.captcha.peek(req.CaptchaToken) {
 		log.Printf("[安全] 登录失败：算术验证未通过（IP=%s，用户名=%q）", ip, req.Username)
 		writeErr(w, http.StatusUnauthorized, "人机验证未通过，请重试")
 		return
 	}
 
 	// 4) 校验凭据；用户名用常量时间比较，密码用 bcrypt
+	//    凭据错误时【不消费】captcha_token，前端保留“已通过”的人机验证，仅清空对应字段便于重试。
 	okUser := s.cfg.AdminUser != "" && safeEqual(req.Username, s.cfg.AdminUser)
 	okPass := s.cfg.AdminPassHash != "" && verifyPassword(s.cfg.AdminPassHash, req.Password)
 	if !okUser || !okPass {
@@ -94,7 +103,16 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// 6) 全部通过：清零两个维度的失败计数 + 建 session + 下发 Cookie
+	// 6) 凭据全部正确，此处才真正消费 captcha_token（一次性，防重放）
+	if !s.captcha.consume(req.CaptchaToken) {
+		// 理论上 peek 已确认有效，并发/过期才会到这；按人机验证失败处理
+		s.recordLoginFailure(ip, req.Username)
+		log.Printf("[安全] 登录失败：算术 token 已失效（并发或过期）（IP=%s）", ip)
+		writeErr(w, http.StatusUnauthorized, "人机验证未通过，请重试")
+		return
+	}
+
+	// 7) 全部通过：清零两个维度的失败计数 + 建 session + 下发 Cookie
 	s.loginRL.Success(ip)
 	s.accountSuccess(req.Username)
 
@@ -119,9 +137,31 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordLoginFailure 同时累计 IP 与账号两个维度的登录失败计数。
+// 本地回环地址（白名单）不计入，避免本地调试触发限流/误锁账号。
 func (s *Store) recordLoginFailure(ip, username string) {
+	if isLoopbackIP(ip) || s.isWhitelistedIP(ip) {
+		return
+	}
 	s.loginRL.Fail(ip)
 	s.accountFail(username)
+}
+
+// isLoopbackIP 判断 IP 是否为本地回环地址（127.0.0.0/8 或 ::1）。
+// 用于服务器本地调试白名单：直连 127.0.0.1 测试时不受登录限流约束。
+func isLoopbackIP(ip string) bool {
+	parsed := net.ParseIP(ip)
+	return parsed != nil && parsed.IsLoopback()
+}
+
+// isWhitelistedIP 判断 IP 是否在管理员配置的白名单内（STORE_IP_WHITELIST 环境变量）。
+// 白名单内容属敏感信息，只存于服务器 secrets，不写进代码或仓库。
+func (s *Store) isWhitelistedIP(ip string) bool {
+	for _, w := range s.cfg.IPWhitelist {
+		if w == ip {
+			return true
+		}
+	}
+	return false
 }
 
 // handleLogout 注销当前会话。

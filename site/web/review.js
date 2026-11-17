@@ -119,12 +119,27 @@
           loginError.textContent = err.message;
         }
         loginError.hidden = false;
-        // 验证码可能已消费/失效，刷新重新验证
-        if (window.resetCaptcha) { window.resetCaptcha(); }
+        var msg = err && err.message ? err.message : '';
+        // 按错误类型只清对应字段，不清全部，方便用户只改错的那项重试。
+        // 人机验证 token 在密码/动态码错误时保持有效（后端仅校验不消费），所以保留“已通过”状态。
+        if (msg.indexOf('动态码') !== -1) {
+          // 动态码错：仅清动态码，保留密码与人机验证
+          document.getElementById('login-totp').value = '';
+          document.getElementById('login-totp').focus();
+        } else if (msg.indexOf('密码') !== -1 || msg.indexOf('用户名') !== -1) {
+          // 用户名/密码错：仅清密码（用户名保留便于重试），保留人机验证与动态码
+          document.getElementById('login-pass').value = '';
+          document.getElementById('login-pass').focus();
+        } else if (msg.indexOf('人机验证') !== -1 || msg.indexOf('验证码') !== -1) {
+          // 人机验证未通过：重置算术题
+          if (window.resetCaptcha) { window.resetCaptcha(); }
+        } else {
+          // 其他未知错误：保守清空密码与动态码，保留人机验证
+          document.getElementById('login-pass').value = '';
+          document.getElementById('login-totp').value = '';
+        }
       })
       .finally(function () {
-        document.getElementById('login-pass').value = '';
-        document.getElementById('login-totp').value = '';
         setTimeout(function () { loginBtn.disabled = false; }, 700);
       });
   });

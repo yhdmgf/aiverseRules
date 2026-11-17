@@ -3,7 +3,7 @@ package main
 // TOTP 动态码（RFC 6238）纯标准库实现。
 //
 // 说明：
-//   - 算法 HMAC-SHA1，6 位数字，步长 60 秒（按需求配置）。
+//   - 算法 HMAC-SHA1，6 位数字，步长 30 秒（RFC 6238 标准步长，兼容所有主流验证器默认值）。
 //   - 校验时允许 ±1 个时间窗容错，缓解客户端与服务端的时钟漂移。
 //   - 密钥只从环境变量 STORE_ADMIN_TOTP_SECRET（base32，无空格）读取，
 //     绝不硬编码进代码或写进日志。
@@ -23,7 +23,7 @@ import (
 
 const (
 	totpDigits    = 6                // 验证码位数
-	totpStep      = 60 * time.Second // 时间步长（60s，按需求配置；扫码时 period 同步为 60）
+	totpStep      = 30 * time.Second // 时间步长（30s，RFC 6238 标准步长，主流验证器默认值；扫码时 period 同步为 30）
 	totpSkew      = 1                // 允许 ±1 个时间窗的时钟容错
 	totpSecretLen = 20               // 生成密钥的字节数（160 bit）
 )
