@@ -13,6 +13,7 @@
   var box = document.getElementById('captcha-box');
   var questionEl = document.getElementById('captcha-question');
   var answerEl = document.getElementById('captcha-answer');
+  var confirmEl = document.getElementById('captcha-confirm');
   var statusEl = document.getElementById('captcha-status');
   var refreshBtn = document.getElementById('captcha-refresh');
 
@@ -36,6 +37,7 @@
     box.classList.add('is-verified');
     questionEl.textContent = '✓ 已通过';
     answerEl.disabled = true;
+    if (confirmEl) { confirmEl.disabled = true; }
     setStatus('验证通过', 'ok');
   }
 
@@ -45,6 +47,7 @@
     box.classList.remove('is-verified');
     answerEl.value = '';
     answerEl.disabled = false;
+    if (confirmEl) { confirmEl.disabled = false; }
   }
 
   function renderChallenge(data) {
@@ -106,6 +109,13 @@
     }).catch(function (err) {
       setStatus(err.message || '验证失败，请重试', 'err');
       refreshChallenge();
+    });
+  }
+
+  // 确认按钮：显式触发校验（避免用户填完直接点登录却未生成 token）
+  if (confirmEl) {
+    confirmEl.addEventListener('click', function () {
+      if (!verified) { verify(); }
     });
   }
 

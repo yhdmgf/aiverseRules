@@ -83,7 +83,10 @@
       return;
     }
     if (!captchaToken) {
-      loginError.textContent = '请先完成人机验证';
+      var ansVal = document.getElementById('captcha-answer').value.trim();
+      loginError.textContent = ansVal
+        ? '答案已填，请点“确认”完成人机验证'
+        : '请先完成人机验证（填算式结果后点“确认”）';
       loginError.hidden = false;
       return;
     }
