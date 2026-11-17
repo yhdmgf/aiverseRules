@@ -23,8 +23,8 @@
     {
       "id": "demo.gallery",
       "name": {
-        "default": "UI \u0026 Config Demo",
-        "en": "UI \u0026 Config Demo",
+        "default": "UI & Config Demo",
+        "en": "UI & Config Demo",
         "zh-cn": "UI与配置演示"
       },
       "description": {
@@ -133,28 +133,66 @@
       "license": "SEE LICENSE",
       "tags": [
         "tool",
-        "hook"
+        "other"
       ],
-      "lastUpdate": 1794884751897
+      "lastUpdate": 1794883369896
     },
     {
-      "id": "jieapi.desktop-pet",
+      "id": "test.tool-demo",
       "name": {
-        "default": "Desktop Pet",
-        "zh-CN": "桌面宠物"
+        "default": "Tool Demo",
+        "zh-cn": "工具演示"
       },
       "description": {
-        "default": "A draggable, interactive desktop pet that reacts to AI run status. Long press for the menu; size and display timing are configurable.",
-        "zh-CN": "可拖拽、可点击互动的桌面宠物：跟随 AI 运行状态变化，长按打开菜单，可在配置页调整大小与显示时机。"
+        "default": "A test plugin for store download/install testing (tool).",
+        "zh-cn": "用于测试商店下载安装的工具类插件。"
       },
-      "author": "jieapi",
-      "repository": "https://github.com/yhdmgf/aiverserules",
+      "author": "aiverse-test",
+      "repository": "https://github.com/yhdmgf/aiverseRules",
       "version": "1.0.0",
       "license": "MIT",
       "tags": [
-        "hook"
+        "tool"
       ],
-      "lastUpdate": 1794885102161
+      "lastUpdate": 1794884959546
+    },
+    {
+      "id": "test.mcp-demo",
+      "name": {
+        "default": "MCP Demo",
+        "zh-cn": "MCP演示"
+      },
+      "description": {
+        "default": "A test plugin for store download/install testing (mcp).",
+        "zh-cn": "用于测试商店下载安装的 MCP 类插件。"
+      },
+      "author": "aiverse-test",
+      "repository": "https://github.com/yhdmgf/aiverseRules",
+      "version": "1.0.0",
+      "license": "MIT",
+      "tags": [
+        "mcp"
+      ],
+      "lastUpdate": 1794884959546
+    },
+    {
+      "id": "test.agent-demo",
+      "name": {
+        "default": "Agent Demo",
+        "zh-cn": "智能体演示"
+      },
+      "description": {
+        "default": "A test plugin for store download/install testing (agent).",
+        "zh-cn": "用于测试商店下载安装的智能体类插件。"
+      },
+      "author": "aiverse-test",
+      "repository": "https://github.com/yhdmgf/aiverseRules",
+      "version": "1.0.0",
+      "license": "MIT",
+      "tags": [
+        "agent"
+      ],
+      "lastUpdate": 1794884959546
     }
   ]
 }
