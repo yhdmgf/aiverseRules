@@ -1,0 +1,43 @@
+name: Mirror to GitCode
+
+# 触发：任何 push 到 main（含后端审核通过后经 API 发布插件/index.json 的提交）+ 支持手动触发
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# 允许读取仓库内容
+permissions:
+  contents: read
+
+# 同一时间只跑一个同步，避免并发互相覆盖
+concurrency:
+  group: mirror-gitcode
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout source (full history for clean mirror)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push mirror to GitCode
+        env:
+          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "$GITCODE_TOKEN" ]; then
+            echo "::error::GITCODE_TOKEN secret 未设置，无法同步到 GitCode"
+            exit 1
+          fi
+          git config user.name  "aiverse-mirror"
+          git config user.email "aiverse-mirror@users.noreply.github.com"
+          # GitCode 目标仓库（完整镜像：本地 main 强制覆盖远端 main）
+          REMOTE="https://qldwi:${GITCODE_TOKEN}@gitcode.com/qldwi/aiverserules.git"
+          git remote add gitcode "$REMOTE"
+          echo "推送 main -> gitcode.com/qldwi/aiverserules (force 完整镜像)..."
+          git push gitcode main --force
+          echo "✓ 已同步到 GitCode"
