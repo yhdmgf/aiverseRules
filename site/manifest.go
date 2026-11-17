@@ -124,10 +124,8 @@ func (m Manifest) inferTags() []string {
 	for _, t := range m.Tags {
 		add(strings.ToLower(strings.TrimSpace(t)))
 	}
-	if len(tags) == 0 {
-		tags = []string{"other"}
-	}
-	return tags
+	// 关键：把推断结果规范化到 APP 白名单内，杜绝非法 tag 写进 index.json。
+	return normalizeTags(tags)
 }
 
 var (
@@ -137,10 +135,78 @@ var (
 	semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 )
 
+// appLegalTags 是 APP 端 PluginTags.ALL 白名单（权威来源：
+// app/.../plugins/data/index/PluginIndexModels.kt 的 PluginTags.ALL）。
+// 写进 index.json 的 tags 必须全部落在此集合内，否则 APP 会判定「tags 含未知值」
+// 并拒绝加载整个商店索引。后端据此把推断/显式 tags 规范化到合法值。
+var appLegalTags = map[string]string{
+	"provider":    "provider",
+	"tool":        "tool",
+	"skill":       "skill",
+	"agent":       "agent",
+	"mcp":         "mcp",
+	"ui":          "ui",
+	"integration": "integration",
+	"other":       "other",
+	// 常见推断值 → APP 合法值的映射（保留语义，落到最近的白名单桶）。
+	"command":    "other",
+	"commands":   "other",
+	"hook":       "other",
+	"hooks":      "other",
+	"rules":      "other",
+	"rule":       "other",
+	"prompt":     "other",
+	"prompts":    "other",
+	"knowledge":  "other",
+	"search":     "other",
+	"settings":   "ui",
+	"config":     "ui",
+	"page":       "ui",
+	"plugin":     "other",
+	"utility":    "tool",
+	"extension":  "integration",
+}
+
+// normalizeTags 把 tags 规范化到 APP 白名单内：小写去空白、按 appLegalTags 映射、
+// 去重保序；全不合法时兜底为 ["other"]。保证写进 index.json 的 tags 永远合法。
+func normalizeTags(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, t := range in {
+		key := strings.ToLower(strings.TrimSpace(t))
+		if key == "" {
+			continue
+		}
+		mapped, ok := appLegalTags[key]
+		if !ok {
+			mapped = "other" // 未知值一律收敛到 other，绝不写入非法 tag
+		}
+		if !seen[mapped] {
+			seen[mapped] = true
+			out = append(out, mapped)
+		}
+	}
+	if len(out) == 0 {
+		out = []string{"other"}
+	}
+	return out
+}
+
 // validateManifest 校验 plugin.json 关键字段，返回可读的错误原因。
 func validateManifest(m *Manifest) error {
 	if m == nil {
 		return fmt.Errorf("plugin.json 解析结果为空")
+	}
+	// 显式 tags：出现任何 APP 白名单外的值（且无法映射）时直接拒绝上传，
+	// 提示合法值，避免非法 tag 流到审核/上架环节破坏商店索引。
+	for _, t := range m.Tags {
+		key := strings.ToLower(strings.TrimSpace(t))
+		if key == "" {
+			continue
+		}
+		if _, ok := appLegalTags[key]; !ok {
+			return fmt.Errorf("tags 含不支持的值 %q；允许的值：provider, tool, skill, agent, mcp, ui, integration, other", t)
+		}
 	}
 	if m.ManifestVersion != 1 {
 		return fmt.Errorf("manifestVersion 必须为 1，当前为 %d", m.ManifestVersion)
