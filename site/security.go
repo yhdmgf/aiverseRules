@@ -54,19 +54,22 @@ func securityHeaders(next http.Handler) http.Handler {
 
 // ---------- 限流器（登录/上传防刷） ----------
 
-// rateEntry 记录某个 key（如 IP）的连续失败次数与锁定截止时间。
+// rateEntry 记录某个 key（如 IP 或账号）的连续失败次数与锁定截止时间。
 type rateEntry struct {
-	Fails    int       `json:"fails"`
+	Fails       int       `json:"fails"`
+	LastFail    time.Time `json:"last_fail,omitempty"` // 最近一次失败时间，用于判断是否仍在计数窗口内
 	LockedUntil time.Time `json:"locked_until,omitempty"`
 }
 
 // rateLimiter 是一个基于文件的简单固定窗口限流器。
 // 连续失败达到阈值后锁定一段时间；成功操作会清零计数。
+// 若 window > 0，则只有窗口内的失败才累计（超出窗口自动归零）。
 type rateLimiter struct {
 	mu       sync.Mutex
 	path     string
 	maxFails int
 	lockDur  time.Duration
+	window   time.Duration // 失败计数窗口；0 表示沿用旧语义（失败永久累计直至锁定）
 	entries  map[string]*rateEntry
 }
 
@@ -119,18 +122,26 @@ func (rl *rateLimiter) Blocked(key string) bool {
 }
 
 // Fail 记录一次失败；达到阈值则锁定。
+// 若启用了 window，则上一次失败已超出窗口时先把计数归零再累加，
+// 实现“窗口内连续 N 次”而不是“永久累计 N 次”。
 func (rl *rateLimiter) Fail(key string) {
 	rl.mu.Lock()
 	defer rl.mu.Unlock()
+	now := time.Now()
 	e := rl.entries[key]
 	if e == nil {
 		e = &rateEntry{}
 		rl.entries[key] = e
 	}
-	e.Fails++
-	if e.Fails >= rl.maxFails {
-		e.LockedUntil = time.Now().Add(rl.lockDur)
+	if rl.window > 0 && !e.LastFail.IsZero() && now.Sub(e.LastFail) > rl.window {
 		e.Fails = 0
+	}
+	e.Fails++
+	e.LastFail = now
+	if e.Fails >= rl.maxFails {
+		e.LockedUntil = now.Add(rl.lockDur)
+		e.Fails = 0
+		e.LastFail = time.Time{} // 锁定期内不再累计，等解锁后重新计
 	}
 	rl.save()
 }
@@ -145,15 +156,22 @@ func (rl *rateLimiter) Success(key string) {
 	}
 }
 
-// clientIP 从请求中提取客户端 IP。本服务位于 nginx 反代之后，
-// 优先信任 X-Forwarded-For 的第一个地址；否则用 RemoteAddr。
+// clientIP 从请求中提取客户端真实 IP。
+//
+// 安全说明：X-Forwarded-For 头可由客户端伪造。本服务仅监听 127.0.0.1、由本机
+// nginx 反代对外，因此客户端直连到我们的 RemoteAddr 就是 nginx 的 127.0.0.1。
+// 为了不因信任伪造头而绕过 IP 锁，默认以 RemoteAddr 为准（即所有外部请求都会
+// 归为 127.0.0.1，IP 维度限流退化为全局限流）。
+// 仅当通过 STORE_TRUST_PROXY=1 显式声明“前面是可信反代（nginx 已用
+// $proxy_add_x_forwarded_for 覆盖而非追加 XFF）”时，才采信 XFF 首段，
+// 以便多用户场景下按真实来源 IP 限流。未设置该变量时一律以 RemoteAddr 为准。
 func clientIP(r *http.Request) string {
-	xff := r.Header.Get("X-Forwarded-For")
-	if xff != "" {
-		parts := strings.Split(xff, ",")
-		ip := strings.TrimSpace(parts[0])
-		if ip != "" {
-			return ip
+	if os.Getenv("STORE_TRUST_PROXY") == "1" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			parts := strings.Split(xff, ",")
+			if ip := strings.TrimSpace(parts[0]); ip != "" {
+				return ip
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)

@@ -48,7 +48,7 @@ aiverserules/
 ├── packages/           # 插件包，文件名 {id}_{version}.zip
 │   ├── demo.chat-bridge_1.2.0.zip
 │   └── …
-└── site/               # 插件商店审核后端源码（Go）
+└── site/               # 插件商店审核后端源码（Go 后端 + 内嵌前端），负责插件包的安全审核与发布，详见 [`site/README.md`](site/README.md)
 ```
 
 ## 客户端如何拉取
@@ -69,3 +69,13 @@ AiVerse 客户端**只从 main 分支**读取：
 4. 商店页**下拉刷新**即可拉到最新列表。
 
 更新插件时递增 `version` 再提交即可，重复的 `id` + `version` 幂等覆盖。
+
+## 审核后台安全机制（site/）
+
+人工审核后台（`site/`）在用户名/密码之外新增了三道防线，保障管理入口不被暴力破解：
+
+1. **滑动人机验证**：登录前先完成本地自实现的滑块拼图挑战（`/api/captcha/challenge` → `/api/captcha/verify`），通过才拿到一次性 `captcha_token`（60s 有效，防重放）。不依赖任何第三方 / Cloudflare。
+2. **TOTP 动态码**：配置环境变量 `STORE_ADMIN_TOTP_SECRET`（base32 密钥）后，登录必须附 6 位动态码（RFC 6238，纯标准库实现，步长 60s，±1 个时间窗容错）。未配置时跳过 TOTP 以保持向后兼容，启动日志会告警。
+3. **失败锁定（IP + 账号 双维度）**：1 分钟内登录失败 3 次，即分别对来源 IP（`data/ipban.json`）和尝试的账号名（`data/accountban.json`）锁定 30 分钟；**输对密码 + TOTP 会同时清零两个维度的计数并解锁**。默认不信任 `X-Forwarded-For`（防伪造绕过 IP 锁），仅当显式设 `STORE_TRUST_PROXY=1` 时才信。
+
+环境变量与部署细节见 [`site/README.md`](site/README.md) 的「环境变量」与「安全清单」章节。

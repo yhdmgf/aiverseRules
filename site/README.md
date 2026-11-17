@@ -19,7 +19,10 @@ AiVerse 插件商店的**人工审核后端**，替代原先「GitHub Actions �
 ```
 plugin-store-backend/
 ├── main.go                 # 入口：加载配置、装配路由、优雅关闭
-├── security.go             # 安全头、限流器、session、bcrypt、路径安全、原子写
+├── security.go             # 安全头、限流器、session、bcrypt、clientIP、路径安全、原子写
+├── ratelimit.go            # 账号维度登录失败锁定（data/accountban.json）+ 带时间窗的限流器扩展
+├── totp.go                 # TOTP 动态码（RFC 6238，纯标准库：生成/校验/otpauth URI）
+├── captcha.go              # 滑动人机验证（本地自实现，challenge + 一次性 token）
 ├── manifest.go             # plugin.json 解析/校验、tags 推断、扩展名黑名单
 ├── upload.go               # POST /api/upload：zip 安全校验（Zip Slip / 黑名单 / 大小）
 ├── admin.go                # 登录/登出/队列/通过/拒绝 handler + session 中间件
@@ -38,7 +41,8 @@ plugin-store-backend/
     ├── rejected/           # 拒绝原因 <插件id>.txt
     ├── sessions/           # 登录会话 token
     ├── packages/           # 发布缓存
-    ├── ipban.json          # 登录限流（同 IP 失败 5 次锁 15 分钟）
+    ├── ipban.json          # 登录限流（同 IP 1 分钟内失败 3 次锁 30 分钟）
+    ├── accountban.json     # 登录限流（同账号 1 分钟内失败 3 次锁 30 分钟）
     └── upload_ratelimit.json  # 上传限流（同 IP 5 分钟 10 次）
 ```
 
@@ -71,6 +75,8 @@ CGO_ENABLED=0 go build -o store-backend .
 |------|------|------|
 | `STORE_ADMIN_USER` | ✅ | 管理员用户名。缺失则登录功能禁用（只打日志，不崩）。 |
 | `STORE_ADMIN_PASS_HASH` | ✅ | 管理员密码的 **bcrypt 哈希**（不存明文）。缺失则登录禁用。 |
+| `STORE_ADMIN_TOTP_SECRET` | 建议 | TOTP 动态码密钥（**base32，无空格**）。未设置时登录**跳过 TOTP 校验**（向后兼容，仅打印警告）；一旦设置，登录必须附 6 位动态码。 |
+| `STORE_TRUST_PROXY` |  | 仅当设为 `1` 时才信 `X-Forwarded-For` 首段按真实来源 IP 限流。**默认不信任**（以 `RemoteAddr` 为准），防伪造 XFF 绕过 IP 锁。见「clientIP 与可信代理」。 |
 | `STORE_GH_TOKEN` | 发布必需 | GitHub token，需对 `yhdmgf/aiverserules` 有写权限。缺失则「通过并发布」返回 503，仍可拒绝/管理队列。 |
 | `STORE_LISTEN` |  | 监听地址，默认 `127.0.0.1:8088`（只听本机，由 nginx 反代）。 |
 | `STORE_DATA_DIR` |  | 数据目录，默认 `./data`。 |
@@ -109,6 +115,18 @@ go run /tmp/genhash.go '你的强密码'
 
 输出的 `$2a$...` 字符串即为 `STORE_ADMIN_PASS_HASH` 的值。
 
+### 生成 TOTP 密钥（不要手写）
+
+`STORE_ADMIN_TOTP_SECRET` 是一段 **base32 无空格** 字符串（建议 160 bit，即 32 字符）。可在 `site/` 下临时写一段 `package main` 代码调用内置的 `GenerateSecret()` 生成（注意 site 下所有 `.go` 同属 `package main`，无法跨包 import，临时跑完删掉即可），或直接用任意标准 TOTP 工具（如 `oathtool`）生成 base32 密钥。
+
+拿到密钥后：
+
+1. 写入 `secrets.env`：`STORE_ADMIN_TOTP_SECRET=<base32>`，重启服务。
+2. 用认证器 App（Google Authenticator / 1Password 等）添加条目，手动输入密钥或扫 `otpauth://totp/...` 二维码（`OTPAuthURI` 可生成对应 URI；算法 SHA1、6 位、步长 60s）。
+3. 重启后登录除用户名/密码外还须填当前 6 位动态码（服务端允许 ±1 个时间窗容错）。
+
+> ⚠️ 未配置 `STORE_ADMIN_TOTP_SECRET` 时 TOTP 校验被跳过，登录仅靠密码 + 滑块；配置后立即强制校验。换密钥会让旧条目失效。
+
 ### secrets 文件（systemd）
 
 `/opt/aiverse-store/secrets.env`（**权限 0600，仅运行用户可读**，内容用占位符示意，请勿填真实值进仓库）：
@@ -116,6 +134,7 @@ go run /tmp/genhash.go '你的强密码'
 ```ini
 STORE_ADMIN_USER=<from-env>
 STORE_ADMIN_PASS_HASH=<from-env>
+STORE_ADMIN_TOTP_SECRET=<from-env>
 STORE_GH_TOKEN=<from-env>
 ```
 
@@ -206,13 +225,36 @@ server {
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
+| GET | `/api/captcha/challenge` | 无 | 下发一次滑块拼图挑战。返回 `{"ok":true,"id":"...","bg":<0~1>}`。 |
+| POST | `/api/captcha/verify` | 无 | 校验滑块落点。body `{"id":"...","x":<0~1>}`；通过返回 `{"ok":true,"token":"..."}`（一次性，60s），失败 `{"ok":false}`。 |
 | POST | `/api/upload` | 无（限流） | 上传插件 zip（multipart 字段名 `file`，可选 `uploader`）。 |
-| POST | `/api/login` | 无（限流） | 登录，成功发 session cookie。 |
+| POST | `/api/login` | 无（限流） | 登录。body `{"username","password","totp","captcha_token"}`；成功 `{"ok":true,"user":"..."}` 并发 session cookie；被锁定时 `429` + `{"ok":false,"error":"...","locked":true,"locked_until":"<RFC3339>"}`。 |
 | POST | `/api/logout` | ✅ | 退出登录。 |
 | GET | `/api/queue` | ✅ | 列出待审核 + 已审核全部条目。 |
 | POST | `/api/approve` | ✅ | 通过并发布到商店仓库。body: `{"id":"..."}`。 |
 | POST | `/api/reject` | ✅ | 拒绝。body: `{"id":"...","reason":"..."}`。 |
 | GET | `/admin` | 无 | 审核前端页面（登录 + 列表）。 |
+
+### 登录保护（三层）
+
+登录前先做人机校验，登录时依次校验动态码与凭据，并按 **IP + 账号** 双维度限流：
+
+1. **滑动人机验证**（本地自实现，不依赖第三方/Cloudflare）
+   - 前端先 `GET /api/captcha/challenge` 拿到 `id` 与滑块起始位 `bg`，拖动拼图块后 `POST /api/captcha/verify` 提交落点 `x`。
+   - 落点与真实目标位误差 ≤ ±0.03 才通过，签发**一次性 token（60s 有效）**；挑战与 token 均存内存、带过期、用后即删（防重放）。
+2. **TOTP 动态码**（RFC 6238，纯标准库 `crypto/hmac`+`sha1`+`base32`，零第三方）
+   - 配置了 `STORE_ADMIN_TOTP_SECRET` 后强制校验 6 位动态码，允许 ±1 个时间窗容错防时钟漂移；常量时间比较防侧信道。
+3. **失败锁定（IP + 账号 双维度）**
+   - **IP 维度**：1 分钟内失败 ≥ 3 次 → 锁 30 分钟（`data/ipban.json`）。
+   - **账号维度**：同用户名 1 分钟内失败 ≥ 3 次 → 锁 30 分钟（`data/accountban.json`）。
+   - 登录校验顺序：查 IP 锁 → 查账号锁 → 校验 captcha_token → 校验用户名/密码 → 校验 TOTP；任一步失败均同时累计 IP 与账号两个维度的失败计数。
+   - **输对密码 + TOTP 即解锁**：全部校验通过时两个维度失败计数同时清零（即使此前已被锁，凭正确凭据登录也会解锁）。
+   - 被锁时返回 `429` 与 `locked_until`（RFC3339），不区分是 IP 锁还是账号锁，不泄露账号是否存在。
+
+### clientIP 与可信代理
+
+- 默认**不信任** `X-Forwarded-For`（客户端可伪造），`clientIP` 一律以 `RemoteAddr` 为准。本服务仅监听 `127.0.0.1`、由本机 nginx 反代，因此所有外部请求的 IP 都是 `127.0.0.1`，IP 维度限流退化为全局限流（仍能有效防暴露）。
+- 仅当确认前置反代可信（nginx 用 `$proxy_add_x_forwarded_for` **覆盖**而非追加 XFF）时，设 `STORE_TRUST_PROXY=1` 才采信 XFF 首段，按真实来源 IP 限流。
 
 ### 上传校验（安全第一）
 
@@ -258,7 +300,11 @@ server {
 ## 七、安全清单
 
 - [x] 上传：扩展名黑名单 + Zip Slip 防护 + 单文件/整包大小限制 + 校验失败不落地。
-- [x] 登录限流：同 IP 连续失败 5 次锁 15 分钟（`data/ipban.json`）。
+- [x] 登录限流（IP 维度）：1 分钟内同 IP 失败 3 次锁 30 分钟（`data/ipban.json`）。
+- [x] 登录限流（账号维度）：1 分钟内同账号失败 3 次锁 30 分钟（`data/accountban.json`）；输对密码+TOTP 两维度同时清零。
+- [x] 滑动人机验证：本地自实现 challenge/verify，一次性 token 60s，防重放，无第三方依赖。
+- [x] TOTP 动态码：RFC 6238 纯标准库，±1 窗容错，常量时间比较；未配置密钥时降级跳过并告警。
+- [x] clientIP 默认以 `RemoteAddr` 为准，防伪造 XFF 绕过 IP 锁（需显式 `STORE_TRUST_PROXY=1` 才信 XFF）。
 - [x] 上传限流：同 IP 5 分钟最多 10 次。
 - [x] session：随机 token、持久化、带过期、cookie `HttpOnly/Secure/SameSite=Strict`。
 - [x] 除 `login/upload` 外所有 `/api/*` 都要 session 校验。

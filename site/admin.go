@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"time"
 )
 
 const (
@@ -17,37 +18,85 @@ func (s *Store) handleAdminPage(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleLogin 处理管理员登录。
-// 凭据来自环境变量（STORE_ADMIN_USER / STORE_ADMIN_PASS_HASH），不硬编码。
+// 凭据来自环境变量（STORE_ADMIN_USER / STORE_ADMIN_PASS_HASH / STORE_ADMIN_TOTP_SECRET），不硬编码。
+//
+// 校验顺序：IP 锁 → 账号锁 → 滑块 captcha_token → 用户名/密码 → TOTP 动态码。
+// 任一步失败都会累计 IP + 账号 两个维度的失败计数；
+// 密码与 TOTP 均正确时才清零两个维度（满足“输对密码+TOTP 即解锁”）。
 func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
-	// 登录限流：同 IP 连续失败 5 次锁 15 分钟
-	ip := clientIP(r)
-	if s.loginRL.Blocked(ip) {
-		writeErr(w, http.StatusTooManyRequests, "失败次数过多，账号已临时锁定，请 15 分钟后再试")
-		return
-	}
 
 	var req struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
+		Username     string `json:"username"`
+		Password     string `json:"password"`
+		TOTP         string `json:"totp"`
+		CaptchaToken string `json:"captcha_token"`
 	}
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, "请求格式错误")
 		return
 	}
 
-	// 校验凭据；用户名用常量时间比较，密码用 bcrypt
+	ip := clientIP(r)
+
+	// 1) IP 维度锁定短路（仅凭 IP 就拒绝，不泄露账号相关信息）
+	if locked, until := s.loginRL.BlockedUntil(ip); locked {
+		log.Printf("[安全] 登录拒绝：IP 处于锁定期（IP=%s）", ip)
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"ok":           false,
+			"error":        "失败次数过多，请稍后再试",
+			"locked":       true,
+			"locked_until": until.UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	// 2) 账号维度锁定短路
+	if locked, until := s.accountLock(req.Username); locked {
+		log.Printf("[安全] 登录拒绝：账号处于锁定期（用户名=%q，IP=%s）", req.Username, ip)
+		writeJSON(w, http.StatusTooManyRequests, map[string]any{
+			"ok":           false,
+			"error":        "失败次数过多，请稍后再试",
+			"locked":       true,
+			"locked_until": until.UTC().Format(time.RFC3339),
+		})
+		return
+	}
+
+	// 3) 滑块人机验证：captcha_token 必须有效且未使用过
+	if !s.captcha.consume(req.CaptchaToken) {
+		s.recordLoginFailure(ip, req.Username)
+		log.Printf("[安全] 登录失败：滑块验证未通过（IP=%s，用户名=%q）", ip, req.Username)
+		writeErr(w, http.StatusUnauthorized, "人机验证未通过，请重试")
+		return
+	}
+
+	// 4) 校验凭据；用户名用常量时间比较，密码用 bcrypt
 	okUser := s.cfg.AdminUser != "" && safeEqual(req.Username, s.cfg.AdminUser)
 	okPass := s.cfg.AdminPassHash != "" && verifyPassword(s.cfg.AdminPassHash, req.Password)
 	if !okUser || !okPass {
-		s.loginRL.Fail(ip)
-		log.Printf("[安全] 登录失败（IP=%s，用户名=%q）", ip, req.Username)
+		s.recordLoginFailure(ip, req.Username)
+		log.Printf("[安全] 登录失败：用户名或密码错误（IP=%s，用户名=%q）", ip, req.Username)
 		writeErr(w, http.StatusUnauthorized, "用户名或密码错误")
 		return
 	}
+
+	// 5) TOTP 动态码：未配置密钥时跳过（向后兼容），配置后强制校验
+	if !s.noTOTP {
+		if !ValidateTOTP(s.cfg.AdminTOTPSecret, req.TOTP) {
+			s.recordLoginFailure(ip, req.Username)
+			log.Printf("[安全] 登录失败：TOTP 动态码错误（IP=%s，用户名=%q）", ip, req.Username)
+			writeErr(w, http.StatusUnauthorized, "动态码错误或已过期")
+			return
+		}
+	}
+
+	// 6) 全部通过：清零两个维度的失败计数 + 建 session + 下发 Cookie
+	s.loginRL.Success(ip)
+	s.accountSuccess(req.Username)
 
 	token, err := s.sessions.Create(req.Username)
 	if err != nil {
@@ -55,7 +104,6 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, "创建会话失败")
 		return
 	}
-	s.loginRL.Success(ip)
 	log.Printf("[信息] 管理员 %s 登录成功（IP=%s）", req.Username, ip)
 
 	http.SetCookie(w, &http.Cookie{
@@ -68,6 +116,12 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   int(s.cfg.SessionTTL.Seconds()),
 	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "user": req.Username})
+}
+
+// recordLoginFailure 同时累计 IP 与账号两个维度的登录失败计数。
+func (s *Store) recordLoginFailure(ip, username string) {
+	s.loginRL.Fail(ip)
+	s.accountFail(username)
 }
 
 // handleLogout 注销当前会话。

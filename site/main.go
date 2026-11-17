@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -30,6 +31,7 @@ type Config struct {
 
 	AdminUser     string // 管理员用户名（STORE_ADMIN_USER）
 	AdminPassHash string // 管理员密码哈希（STORE_ADMIN_PASS_HASH，bcrypt）
+	AdminTOTPSecret string // TOTP 动态码密钥（STORE_ADMIN_TOTP_SECRET，base32 无空格）；空则降级跳过 TOTP
 	GHToken       string // GitHub token（STORE_GH_TOKEN）
 
 	GHOwner string // 商店仓库 owner，默认 yhdmgf
@@ -47,6 +49,7 @@ func loadConfig() Config {
 		DataDir:    envOr("STORE_DATA_DIR", "data"),
 		AdminUser:  os.Getenv("STORE_ADMIN_USER"),
 		AdminPassHash: os.Getenv("STORE_ADMIN_PASS_HASH"),
+		AdminTOTPSecret: strings.ToUpper(strings.ReplaceAll(strings.TrimSpace(os.Getenv("STORE_ADMIN_TOTP_SECRET")), " ", "")),
 		GHToken:       os.Getenv("STORE_GH_TOKEN"),
 		GHOwner:       envOr("STORE_GH_OWNER", "yhdmgf"),
 		GHRepo:        envOr("STORE_GH_REPO", "aiverserules"),
@@ -77,8 +80,10 @@ func newMux(s *Store) *http.ServeMux {
 	mux.Handle("/admin/", http.HandlerFunc(s.handleAdminPage))
 
 	// 公开接口（/api/ 前缀，nginx /api/ 反代到这里）
-	mux.HandleFunc("/api/upload", s.handleUpload) // 上传（自身限流）
-	mux.HandleFunc("/api/login", s.handleLogin)   // 登录（自身限流）
+	mux.HandleFunc("/api/captcha/challenge", s.handleCaptchaChallenge) // 下发滑块挑战
+	mux.HandleFunc("/api/captcha/verify", s.handleCaptchaVerify)       // 校验滑块并签发一次性 token
+	mux.HandleFunc("/api/upload", s.handleUpload)                      // 上传（自身限流）
+	mux.HandleFunc("/api/login", s.handleLogin)                        // 登录（IP + 账号 双维度限流 + 滑块 + TOTP）
 
 	// 需登录的管理接口
 	mux.Handle("/api/queue", s.requireSession(http.HandlerFunc(s.handleQueue)))
@@ -109,6 +114,13 @@ func main() {
 		log.Println("[警告] STORE_ADMIN_USER / STORE_ADMIN_PASS_HASH 未设置，登录功能将不可用")
 	} else {
 		log.Printf("[信息] 管理员登录已启用（用户名=%s）", cfg.AdminUser)
+	}
+	// TOTP 动态码：未配置则降级（登录跳过 TOTP），并给出一次性生成命令提示。
+	if cfg.AdminTOTPSecret == "" {
+		log.Println("[警告] STORE_ADMIN_TOTP_SECRET 未设置，TOTP 动态码校验将被跳过（仅为向后兼容，强烈建议尽快配置）")
+		log.Printf("[提示] 可在 site/ 目录下运行一次性程序生成 base32 密钥（调用本包 GenerateSecret()），填入环境变量后重启即强制校验")
+	} else {
+		log.Println("[信息] TOTP 动态码校验已启用")
 	}
 	if cfg.GHToken == "" {
 		log.Println("[警告] STORE_GH_TOKEN 未设置，审核通过后的发布功能将被禁用（仍可拒绝/管理队列）")

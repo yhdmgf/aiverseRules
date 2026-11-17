@@ -23,6 +23,27 @@
         <span>密码</span>
         <input type="password" id="login-pass" name="password" autocomplete="current-password" required>
       </label>
+      <label>
+        <span>动态码</span>
+        <input type="text" id="login-totp" name="totp" inputmode="numeric" autocomplete="one-time-code"
+          maxlength="6" placeholder="6位动态码">
+      </label>
+      <div id="captcha-box">
+        <div class="captcha-head">
+          <span class="captcha-label">滑动验证</span>
+          <button type="button" id="captcha-refresh" class="captcha-refresh" title="换一个">换一个</button>
+        </div>
+        <div id="captcha-puzzle" class="captcha-puzzle">
+          <div id="captcha-gap" class="captcha-gap"></div>
+          <div id="captcha-piece" class="captcha-piece"></div>
+        </div>
+        <div id="captcha-track" class="captcha-track">
+          <div id="captcha-fill" class="captcha-fill"></div>
+          <span id="captcha-hint" class="captcha-hint">按住滑块拖动，对齐缺口</span>
+          <div id="captcha-handle" class="captcha-handle">»</div>
+        </div>
+        <p id="captcha-status" class="captcha-status" hidden></p>
+      </div>
       <button type="submit" id="login-btn">登录</button>
       <p id="login-error" class="error" hidden></p>
       <p id="login-success" class="success" hidden></p>
@@ -103,6 +124,7 @@
     </dialog>
   </div>
 
+  <script src="captcha.js"></script>
   <script src="review.js"></script>
 </body>
 </html>

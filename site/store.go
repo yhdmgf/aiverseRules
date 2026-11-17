@@ -46,10 +46,13 @@ type Store struct {
 	pkgDir string // data/packages  发布缓存
 
 	sessions   *sessionStore
-	loginRL    *rateLimiter
+	loginRL    *rateLimiter // IP 维度登录限流（data/ipban.json）
+	accountRL  *rateLimiter // 账号维度登录限流（data/accountban.json）
 	uploadRL   *rateLimiter
+	captcha    *captchaStore // 滑块验证挑战与一次性 token（内存）
 	publisher  *publisher
 	ghEnabled  bool
+	noTOTP     bool // 未配置 STORE_ADMIN_TOTP_SECRET 时为 true，登录跳过 TOTP 校验
 }
 
 // NewStore 初始化目录结构与各组件。
@@ -68,12 +71,20 @@ func NewStore(cfg Config) (*Store, error) {
 		}
 	}
 	s.sessions = newSessionStore(s.sessDir, cfg.SessionTTL)
-	// 登录限流：同 IP 连续失败 5 次锁 15 分钟
-	s.loginRL = newRateLimiter(filepath.Join(cfg.DataDir, "ipban.json"), 5, 15*time.Minute)
+	// 登录限流（IP 维度）：1 分钟内同 IP 连续失败 3 次锁 30 分钟
+	s.loginRL = newWindowedRateLimiter(filepath.Join(cfg.DataDir, "ipban.json"), 3, time.Minute, 30*time.Minute)
+	s.loginRL.cleanupExpired()
+	// 登录限流（账号维度）：1 分钟内同账号失败 3 次锁 30 分钟
+	s.accountRL = newAccountRateLimiter(cfg.DataDir)
+	s.accountRL.cleanupExpired()
+	// 滑块验证（登录前人机校验）
+	s.captcha = newCaptchaStore()
 	// 上传限流：同 IP 5 分钟内最多 10 次
 	s.uploadRL = newRateLimiter(filepath.Join(cfg.DataDir, "upload_ratelimit.json"), 10, 5*time.Minute)
 	s.publisher = newPublisher(cfg)
 	s.ghEnabled = cfg.GHToken != ""
+	// 未配置 TOTP 密钥时降级：跳过 TOTP 校验（保证向后兼容），启动日志已告警
+	s.noTOTP = cfg.AdminTOTPSecret == ""
 	return s, nil
 }
 

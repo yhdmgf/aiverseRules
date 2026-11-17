@@ -36,6 +36,7 @@
         if (!res.ok) {
           var err = new Error(data.error || ('请求失败 (' + res.status + ')'));
           err.status = res.status;
+          err.data = data;
           throw err;
         }
         return data;
@@ -67,10 +68,36 @@
   loginForm.addEventListener('submit', function (e) {
     e.preventDefault();
     loginError.hidden = true;
-    loginBtn.disabled = true;
+
     var username = document.getElementById('login-user').value.trim();
     var password = document.getElementById('login-pass').value;
-    api('/api/login', { method: 'POST', body: { username: username, password: password } })
+    var totp = document.getElementById('login-totp').value.trim();
+    var captchaToken = (window.getCaptchaToken ? window.getCaptchaToken() : '');
+
+    // 前端预校验：滑动验证已通过；动态码仅当服务端要求时校验 6 位
+    var totpRequired = !!(window.isTOTPRequired && window.isTOTPRequired());
+    if (totpRequired && !/^\d{6}$/.test(totp)) {
+      loginError.textContent = '请输入 6 位数字动态码';
+      loginError.hidden = false;
+      document.getElementById('login-totp').focus();
+      return;
+    }
+    if (!captchaToken) {
+      loginError.textContent = '请先完成滑动人机验证';
+      loginError.hidden = false;
+      return;
+    }
+
+    loginBtn.disabled = true;
+    api('/api/login', {
+      method: 'POST',
+      body: {
+        username: username,
+        password: password,
+        totp: totp,
+        captcha_token: captchaToken
+      }
+    })
       .then(function (data) {
         var ok = document.getElementById('login-success');
         ok.textContent = '✓ 登录成功，正在进入审核后台…';
@@ -81,14 +108,31 @@
         }, 700);
       })
       .catch(function (err) {
-        loginError.textContent = err.message;
+        var raw = err && err.data ? err.data : {};
+        if (raw.locked) {
+          var mins = lockedMinutes(raw.locked_until);
+          loginError.textContent = '账号已锁定，请 ' + mins + ' 分钟后再试';
+        } else {
+          loginError.textContent = err.message;
+        }
         loginError.hidden = false;
+        // 验证码可能已消费/失效，刷新重新验证
+        if (window.resetCaptcha) { window.resetCaptcha(); }
       })
       .finally(function () {
         document.getElementById('login-pass').value = '';
+        document.getElementById('login-totp').value = '';
         setTimeout(function () { loginBtn.disabled = false; }, 700);
       });
   });
+
+  // 计算锁定剩余分钟（至少 1）
+  function lockedMinutes(rfc3339) {
+    var t = rfc3339 ? new Date(rfc3339).getTime() : NaN;
+    if (isNaN(t)) { return 1; }
+    var diff = Math.ceil((t - Date.now()) / 60000);
+    return diff > 0 ? diff : 1;
+  }
 
   logoutBtn.addEventListener('click', function () {
     if (!window.confirm('确定退出登录吗？')) { return; }
