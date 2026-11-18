@@ -1,10 +1,19 @@
 package main
 
 import (
+	"archive/zip"
+	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -51,6 +60,7 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if !skipRL {
 		if locked, until := s.loginRL.BlockedUntil(ip); locked {
 			log.Printf("[安全] 登录拒绝：IP 处于锁定期（IP=%s）", ip)
+			s.writeAudit(auditEvent{Event: auditEventLoginLocked, User: req.Username, IP: ip, Result: "fail", Detail: "IP 锁定期"})
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"ok":           false,
 				"error":        "失败次数过多，请稍后再试",
@@ -63,6 +73,7 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 		// 2) 账号维度锁定短路
 		if locked, until := s.accountLock(req.Username); locked {
 			log.Printf("[安全] 登录拒绝：账号处于锁定期（用户名=%q，IP=%s）", req.Username, ip)
+			s.writeAudit(auditEvent{Event: auditEventLoginLocked, User: req.Username, IP: ip, Result: "fail", Detail: "账号锁定期"})
 			writeJSON(w, http.StatusTooManyRequests, map[string]any{
 				"ok":           false,
 				"error":        "失败次数过多，请稍后再试",
@@ -123,6 +134,9 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[信息] 管理员 %s 登录成功（IP=%s）", req.Username, ip)
+	s.writeAudit(auditEvent{
+		Event: auditEventLogin, User: req.Username, IP: ip, Result: "ok",
+	})
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     sessionCookie,
@@ -139,6 +153,9 @@ func (s *Store) handleLogin(w http.ResponseWriter, r *http.Request) {
 // recordLoginFailure 同时累计 IP 与账号两个维度的登录失败计数。
 // 本地回环地址（白名单）不计入，避免本地调试触发限流/误锁账号。
 func (s *Store) recordLoginFailure(ip, username string) {
+	s.writeAudit(auditEvent{
+		Event: auditEventLoginFailed, User: username, IP: ip, Result: "fail",
+	})
 	if isLoopbackIP(ip) || s.isWhitelistedIP(ip) {
 		return
 	}
@@ -170,6 +187,8 @@ func (s *Store) handleLogout(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
+	user := userFrom(r.Context())
+	s.writeAudit(auditEvent{Event: auditEventLogout, User: user, IP: clientIP(r), Result: "ok"})
 	if c, err := r.Cookie(sessionCookie); err == nil {
 		s.sessions.Delete(c.Value)
 	}
@@ -259,6 +278,10 @@ func (s *Store) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	s.CleanupPackage(req.ID)
 	log.Printf("[信息] 插件 %s v%s 已由 %s 审核通过并发布", entry.ID, entry.Version, user)
+	s.writeAudit(auditEvent{
+		Event: auditEventApprove, User: user, IP: clientIP(r), Target: req.ID,
+		Result: "ok", Detail: "version=" + entry.Version,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":      true,
 		"message": "已发布到商店仓库 " + s.ghRepoSlug(),
@@ -285,6 +308,10 @@ func (s *Store) handleReject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("[信息] 插件 %s 已由 %s 拒绝", req.ID, user)
+	s.writeAudit(auditEvent{
+		Event: auditEventReject, User: user, IP: clientIP(r), Target: req.ID,
+		Result: "ok", Detail: strings.TrimSpace(req.Reason),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "已拒绝"})
 }
 
@@ -313,4 +340,1011 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 
 func writeErr(w http.ResponseWriter, status int, msg string) {
 	writeJSON(w, status, map[string]any{"ok": false, "error": msg})
+}
+
+// ---------- 扩展：下架 / 审计 / 统计 / 待审核下载 ----------
+
+// handleUnpublish 从商店下架插件：从 index.json 移除条目 + 删除 packages/<id>_<version>.zip，
+// 并写审计日志。请求体：{"id":"...","version":"1.0.0"}（version 可选，缺省取 index.json 中该 id 最新版）。
+func (s *Store) handleUnpublish(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	if !s.ghEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "GitHub 未配置（缺少 STORE_GH_TOKEN），无法下架")
+		return
+	}
+	var req struct {
+		ID      string `json:"id"`
+		Version string `json:"version"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil || !safeFilename(req.ID) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	user := userFrom(r.Context())
+	version := strings.TrimSpace(req.Version)
+
+	// 未指定版本时从 index.json 查该 id 的最新版本
+	if version == "" {
+		v, err := s.latestPublishedVersion(req.ID)
+		if err != nil || v == "" {
+			writeErr(w, http.StatusNotFound, "index.json 中未找到该插件")
+			return
+		}
+		version = v
+	}
+
+	// 加全局发布锁，与 approve 串行，避免与并发发布写 index.json 冲突
+	unlock := acquirePublishLock()
+	defer unlock()
+
+	if err := s.unpublishFromStore(r.Context(), req.ID, version); err != nil {
+		s.writeAudit(auditEvent{
+			Event: auditEventUnpublish, User: user, IP: clientIP(r), Target: req.ID,
+			Result: "fail", Detail: "version=" + version + "; " + sanitizeGHErr(err),
+		})
+		log.Printf("[错误] 下架插件 %s v%s 失败: %v", req.ID, version, err)
+		writeErr(w, http.StatusBadGateway, "下架失败: "+sanitizeGHErr(err))
+		return
+	}
+	s.writeAudit(auditEvent{
+		Event: auditEventUnpublish, User: user, IP: clientIP(r), Target: req.ID,
+		Result: "ok", Detail: "version=" + version,
+	})
+	log.Printf("[信息] 插件 %s v%s 已由 %s 下架", req.ID, version, user)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": fmt.Sprintf("已下架 %s v%s", req.ID, version),
+	})
+}
+
+// latestPublishedVersion 从仓库 index.json 查询某 id 的最新版本号（按 lastUpdate）。
+func (s *Store) latestPublishedVersion(id string) (string, error) {
+	if !s.ghEnabled {
+		return "", fmt.Errorf("GitHub 未配置")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	content, _, err := s.publisher.getFile(ctx, "index.json", s.cfg.GHBranch)
+	if err != nil {
+		return "", err
+	}
+	if len(content) == 0 {
+		return "", nil
+	}
+	var idx indexFile
+	if err := json.Unmarshal(content, &idx); err != nil {
+		return "", err
+	}
+	latest := ""
+	var latestTS int64 = -1
+	for _, e := range idx.Plugins {
+		if e.ID != id {
+			continue
+		}
+		if e.LastUpdate > latestTS {
+			latestTS = e.LastUpdate
+			latest = e.Version
+		}
+	}
+	return latest, nil
+}
+
+// handlePendingDownload 登录后从暂存目录下载待审核包，便于运营快速测试。
+// GET /api/pending-download?id=<pluginId>
+func (s *Store) handlePendingDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" || !safeFilename(id) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	e, err := s.getEntry(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "插件记录不存在")
+		return
+	}
+	if e.PackagePath == "" {
+		writeErr(w, http.StatusGone, "暂存包已被清理（可能已发布或已拒绝）")
+		return
+	}
+	absPath, ok := safeJoin(s.cfg.DataDir, e.PackagePath)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "包路径非法")
+		return
+	}
+	f, err := os.Open(absPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeErr(w, http.StatusGone, "暂存包已被清理")
+			return
+		}
+		writeErr(w, http.StatusInternalServerError, "读取暂存包失败")
+		return
+	}
+	defer f.Close()
+
+	filename := e.OrigFilename
+	if filename == "" {
+		filename = fmt.Sprintf("%s_%s.zip", e.ID, e.Version)
+	}
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", sanitizeHeaderVal(filename)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	s.writeAudit(auditEvent{Event: auditEventPendingDownload, User: userFrom(r.Context()), IP: clientIP(r), Target: id, Result: "ok"})
+	http.ServeContent(w, r, filename, time.Now(), f)
+}
+
+// handleOwner 查询插件所有者（公开接口，供 Android 客户端在更新前校验）。
+// GET /api/owner?id=<pluginId>
+// 优先返回待审核队列登记的 uploader，其次回退到已发布 index.json 的 author；两者均无则 exists=false。
+func (s *Store) handleOwner(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" {
+		writeErr(w, http.StatusBadRequest, "缺少 id 参数")
+		return
+	}
+
+	// 1. 待审核队列登记的上传者为准
+	if entry, err := s.getEntry(id); err == nil && entry != nil && entry.Uploader != "" {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok": true, "id": id, "owner": entry.Uploader, "exists": true,
+		})
+		return
+	}
+
+	// 2. 回退到已发布索引的作者
+	if s.ghEnabled {
+		if idx, err := s.publisher.fetchIndex(r.Context(), s.cfg.GHBranch); err == nil {
+			for _, p := range idx.Plugins {
+				if p.ID == id {
+					writeJSON(w, http.StatusOK, map[string]any{
+						"ok": true, "id": id, "owner": p.Author, "exists": true,
+					})
+					return
+				}
+			}
+		}
+	}
+
+	// 3. 不存在
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok": true, "id": id, "exists": false,
+	})
+}
+
+// handleOwnerChange 修改待审核插件的所有者（管理员专用）。
+// POST /api/owner/change  请求体：{"id":"pluginId","new_owner":"新作者"}
+// 仅能改待审核队列里的所有者（已发布插件的所有者由 index.json 的 author 决定，随发布流程更新）。
+func (s *Store) handleOwnerChange(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var req struct {
+		ID       string `json:"id"`
+		NewOwner string `json:"new_owner"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误")
+		return
+	}
+	req.ID = strings.TrimSpace(req.ID)
+	req.NewOwner = strings.TrimSpace(req.NewOwner)
+	if req.ID == "" || req.NewOwner == "" {
+		writeErr(w, http.StatusBadRequest, "id 和 new_owner 不能为空")
+		return
+	}
+
+	entry, err := s.getEntry(req.ID)
+	if err != nil || entry == nil {
+		writeErr(w, http.StatusNotFound, "插件不存在（只能修改待审核插件的所有者）")
+		return
+	}
+	oldOwner := entry.Uploader
+	entry.Uploader = req.NewOwner
+	if err := s.saveEntry(entry); err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存失败")
+		return
+	}
+
+	user := userFrom(r.Context())
+	s.writeAudit(auditEvent{Event: auditEventOwnerChange, User: user, IP: clientIP(r), Target: req.ID, Result: "ok", Detail: oldOwner + " -> " + req.NewOwner})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"id":      req.ID,
+		"owner":   req.NewOwner,
+		"message": "所有者已修改",
+	})
+}
+
+// handlePublished 列出 index.json 中全部已发布插件。
+// GET /api/published
+func (s *Store) handlePublished(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	if !s.ghEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "GitHub 未配置")
+		return
+	}
+	idx, err := s.publisher.fetchIndex(r.Context(), s.cfg.GHBranch)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "获取 index.json 失败: "+sanitizeGHErr(err))
+		return
+	}
+	items := make([]map[string]any, 0, len(idx.Plugins))
+	for _, e := range idx.Plugins {
+		nameZh := e.Name.Extra["zh-CN"]
+		if nameZh == "" {
+			nameZh = e.Name.Default
+		}
+		descZh := e.Description.Extra["zh-CN"]
+		if descZh == "" {
+			descZh = e.Description.Default
+		}
+		items = append(items, map[string]any{
+			"id":             e.ID,
+			"name_zh":        nameZh,
+			"version":        e.Version,
+			"author":         e.Author,
+			"tags":           e.Tags,
+			"description_zh": descZh,
+			"last_update":    e.LastUpdate,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"items": items,
+		"total": len(items),
+	})
+}
+
+// handlePublishedDownload 从商店仓库下载已发布包。
+// GET /api/published-download?id=<pluginId>&version=<v>
+// version 可选：缺省时从 index.json 取该 id 最近更新的版本。
+func (s *Store) handlePublishedDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	if !s.ghEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "GitHub 未配置")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" || !safeFilename(id) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	version := strings.TrimSpace(r.URL.Query().Get("version"))
+	if version != "" && !safeFilename(version) {
+		writeErr(w, http.StatusBadRequest, "参数 version 非法")
+		return
+	}
+
+	idx, err := s.publisher.fetchIndex(r.Context(), s.cfg.GHBranch)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "获取 index.json 失败: "+sanitizeGHErr(err))
+		return
+	}
+
+	// 在 index 中查找目标条目：指定 version 时精确匹配；未指定时取 lastUpdate 最新的那条
+	var found *indexEntry
+	var latestTS int64 = -1
+	for i := range idx.Plugins {
+		if idx.Plugins[i].ID != id {
+			continue
+		}
+		if version != "" && idx.Plugins[i].Version == version {
+			found = &idx.Plugins[i]
+			break
+		}
+		if version == "" && idx.Plugins[i].LastUpdate > latestTS {
+			latestTS = idx.Plugins[i].LastUpdate
+			found = &idx.Plugins[i]
+		}
+	}
+	if found == nil {
+		writeErr(w, http.StatusNotFound, "index.json 中未找到该插件")
+		return
+	}
+	if version == "" {
+		version = found.Version
+	}
+
+	// 防路径穿越：id 和 version 均已通过 safeFilename 校验，fmt.Sprintf 不会产生 ../ 段
+	pkgRemote := fmt.Sprintf("packages/%s_%s.zip", id, version)
+	data, _, err := s.publisher.getFile(r.Context(), pkgRemote, s.cfg.GHBranch)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "下载包失败: "+sanitizeGHErr(err))
+		return
+	}
+	if len(data) == 0 {
+		writeErr(w, http.StatusGone, "远程包不存在（可能已被下架）")
+		return
+	}
+
+	filename := fmt.Sprintf("%s_%s.zip", id, version)
+	w.Header().Set("Content-Type", "application/zip")
+	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", sanitizeHeaderVal(filename)))
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	s.writeAudit(auditEvent{
+		Event:  auditEventPublishedDownload,
+		User:   userFrom(r.Context()),
+		IP:     clientIP(r),
+		Target: id,
+		Result: "ok",
+		Detail: "version=" + version,
+	})
+	http.ServeContent(w, r, filename, time.Now(), bytes.NewReader(data))
+}
+
+// sanitizeHeaderVal 过滤 Content-Disposition 里的非法字符，防 header 注入。
+func sanitizeHeaderVal(s string) string {
+	return strings.Map(func(c rune) rune {
+		if c == '"' || c == '\\' || c == '\r' || c == '\n' {
+			return '_'
+		}
+		return c
+	}, s)
+}
+
+// handleAudit 返回审计日志（倒序，最多 200 条），可选 ?event= 过滤、?limit= 限制条数。
+func (s *Store) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	event := strings.TrimSpace(r.URL.Query().Get("event"))
+	limit := 200
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.Atoi(l); err == nil && n > 0 && n <= 500 {
+			limit = n
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": s.readAudit(event, limit)})
+}
+
+// handleStats 返回插件包下载量统计（解析源站 nginx access 日志，按 IP 去重）。
+// 近似值：命中 QEdge CDN 边缘缓存的请求不会回源，前端需标注。
+func (s *Store) handleStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	logPath := strings.TrimSpace(s.cfg.NginxAccessLog)
+	if logPath == "" {
+		writeErr(w, http.StatusServiceUnavailable, "未配置访问日志路径（STORE_NGINX_ACCESS_LOG）")
+		return
+	}
+	items, err := s.buildStatsFromIndex(r.Context())
+	if err == nil {
+		generated := time.Now().Format(time.RFC3339)
+		// 写穿持久化；写失败只记录告警，不影响返回
+		if serr := s.saveStats(items); serr != nil {
+			log.Printf("[警告] 写入下载量统计缓存失败: %v", serr)
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":        true,
+			"items":     items,
+			"approx":    true,
+			"note":      "近似值（仅源站回源请求；CDN 边缘命中不回源，部分漏计）",
+			"log_path":  logPath,
+			"generated": generated,
+			"stale":     false,
+		})
+		return
+	}
+	// 实时统计失败（GitHub 拉取 / 日志读取出错）：降级返回上次缓存
+	log.Printf("[警告] 实时下载量统计失败，降级返回缓存: %v", err)
+	cached, cachedAt, lerr := s.loadStats()
+	if lerr != nil || cached == nil {
+		writeErr(w, http.StatusInternalServerError, "统计失败且无可用缓存: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"items":     cached,
+		"approx":    true,
+		"note":      "近似值（仅源站回源请求；CDN 边缘命中不回源，部分漏计）；当前为缓存（实时获取失败）",
+		"log_path":  logPath,
+		"generated": cachedAt,
+		"stale":     true,
+	})
+}
+
+// ---------- 扩展：包内容预览/编辑、搜索、批量操作、更新对比、IP 黑名单 ----------
+
+// maxBatchIDs 批量操作单次最多处理的插件数量。
+const maxBatchIDs = 100
+
+// inboxPackagePath 返回待审核包的本地路径（data/incoming/<id>_<version>.zip）。
+// id/version 均已通过 safeFilename 校验，fmt.Sprintf 不会产生穿越段。
+func (s *Store) inboxPackagePath(id, version string) (string, bool) {
+	if !safeFilename(id) || !safeFilename(version) {
+		return "", false
+	}
+	name := fmt.Sprintf("%s_%s.zip", id, version)
+	return safeJoin(s.inbox, name)
+}
+
+// loadInboxZip 读取指定 id 的待审核 zip，返回 zip 读取器与原始字节。
+func (s *Store) loadInboxZip(id string) (*zip.Reader, []byte, *QueueEntry, error) {
+	entry, err := s.getEntry(id)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	path, ok := s.inboxPackagePath(entry.ID, entry.Version)
+	if !ok {
+		return nil, nil, nil, fmt.Errorf("插件 id/version 生成的不安全路径")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return zr, data, entry, nil
+}
+
+// zipFileInfoList 遍历 zip，返回前端展示用的文件列表（含是否目录/文本）。
+func zipFileInfoList(zr *zip.Reader) []map[string]any {
+	files := make([]map[string]any, 0, len(zr.File))
+	for _, f := range zr.File {
+		isDir := f.FileInfo().IsDir()
+		isText := false
+		if !isDir {
+			rc, err := f.Open()
+			if err == nil {
+				content, rerr := io.ReadAll(io.LimitReader(rc, maxPreviewSize))
+				rc.Close()
+				if rerr == nil {
+					isText = isTextContent(content)
+				}
+			}
+		}
+		files = append(files, map[string]any{
+			"path":   f.Name,
+			"size":   f.UncompressedSize64,
+			"isDir":  isDir,
+			"isText": isText,
+		})
+	}
+	return files
+}
+
+// readInboxManifest 解析待审核包根目录的 plugin.json。
+func readInboxManifest(zr *zip.Reader) (*Manifest, error) {
+	content, err := readZipFile(zr, "plugin.json")
+	if err != nil {
+		return nil, fmt.Errorf("包内缺少 plugin.json")
+	}
+	var m Manifest
+	if err := json.Unmarshal(content, &m); err != nil {
+		return nil, fmt.Errorf("plugin.json 解析失败: %w", err)
+	}
+	return &m, nil
+}
+
+// handleInspect 预览待审核包内容：返回文件树 + plugin.json 内容。
+// GET /api/inspect?id=<pluginId>
+func (s *Store) handleInspect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" || !safeFilename(id) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	zr, _, entry, err := s.loadInboxZip(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "待审核包不存在或已被清理")
+		return
+	}
+	manifest, merr := readInboxManifest(zr)
+	var manifestOut any
+	if merr == nil && manifest != nil {
+		manifestOut = manifest
+	}
+	s.writeAudit(auditEvent{Event: auditEventInspect, User: userFrom(r.Context()), IP: clientIP(r), Target: id, Result: "ok", Detail: "version=" + entry.Version})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"files":    zipFileInfoList(zr),
+		"manifest": manifestOut,
+	})
+}
+
+// handleInspectFile 预览包内单个文本文件内容。
+// GET /api/inspect/file?id=<pluginId>&path=<filePath>
+func (s *Store) handleInspectFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	filePath := r.URL.Query().Get("path")
+	if id == "" || !safeFilename(id) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	if _, ok := normalizeZipPath(filePath); !ok {
+		writeErr(w, http.StatusBadRequest, "参数 path 非法")
+		return
+	}
+	zr, _, _, err := s.loadInboxZip(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "待审核包不存在或已被清理")
+		return
+	}
+	content, err := readZipFile(zr, filePath)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	if int64(len(content)) > maxPreviewSize {
+		writeErr(w, http.StatusBadRequest, "文件超过 1MB，无法预览")
+		return
+	}
+	if !isTextContent(content) {
+		writeErr(w, http.StatusBadRequest, "二进制文件，无法预览")
+		return
+	}
+	s.writeAudit(auditEvent{Event: auditEventInspect, User: userFrom(r.Context()), IP: clientIP(r), Target: id, Result: "ok", Detail: "file=" + filePath})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"content": string(content),
+		"isText":  true,
+	})
+}
+
+// handleInspectEdit 修改包内文本文件内容并重新打包覆盖待审核包。
+// POST /api/inspect/edit body: {"id","path","content"}
+func (s *Store) handleInspectEdit(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var req struct {
+		ID      string `json:"id"`
+		Path    string `json:"path"`
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxPreviewSize+(1<<20))).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	if req.ID == "" || !safeFilename(req.ID) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	cleaned, ok := normalizeZipPath(req.Path)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "参数 path 非法")
+		return
+	}
+	newContent := []byte(req.Content)
+	if int64(len(newContent)) > maxPreviewSize {
+		writeErr(w, http.StatusBadRequest, "新内容超过 1MB，无法保存")
+		return
+	}
+	if !isTextContent(newContent) {
+		writeErr(w, http.StatusBadRequest, "仅支持编辑文本文件")
+		return
+	}
+	user := userFrom(r.Context())
+	zr, data, entry, err := s.loadInboxZip(req.ID)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "待审核包不存在或已被清理")
+		return
+	}
+	// 只允许编辑已存在的文本文件：先确认原文件为文本
+	orig, err := readZipFile(zr, cleaned)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "文件不存在")
+		return
+	}
+	if int64(len(orig)) > maxPreviewSize || !isTextContent(orig) {
+		writeErr(w, http.StatusBadRequest, "二进制文件，无法编辑")
+		return
+	}
+	newZip, err := replaceZipFile(data, cleaned, newContent)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "重新打包失败")
+		return
+	}
+	path, ok := s.inboxPackagePath(entry.ID, entry.Version)
+	if !ok {
+		writeErr(w, http.StatusBadRequest, "插件 id/version 生成的不安全路径")
+		return
+	}
+	if err := atomicWrite(path, newZip, 0o644); err != nil {
+		writeErr(w, http.StatusInternalServerError, "保存修改后的包失败")
+		return
+	}
+	log.Printf("[信息] 管理员 %s 修改了插件 %s v%s 包内文件 %s", user, entry.ID, entry.Version, cleaned)
+	s.writeAudit(auditEvent{Event: auditEventInspectEdit, User: user, IP: clientIP(r), Target: req.ID, Result: "ok", Detail: "file=" + cleaned})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "已修改并重新打包",
+	})
+}
+
+// handleQueueSearch 搜索/筛选审核条目。
+// GET /api/queue/search?q=&status=&from=&to=（参数均可选）
+func (s *Store) handleQueueSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	statusFilter := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("status")))
+	var from, to time.Time
+	if v := strings.TrimSpace(r.URL.Query().Get("from")); v != "" {
+		t, err := time.ParseInLocation("2006-01-02", v, time.Local)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "参数 from 格式非法（应为 YYYY-MM-DD）")
+			return
+		}
+		from = t
+	}
+	if v := strings.TrimSpace(r.URL.Query().Get("to")); v != "" {
+		t, err := time.ParseInLocation("2006-01-02", v, time.Local)
+		if err != nil {
+			writeErr(w, http.StatusBadRequest, "参数 to 格式非法（应为 YYYY-MM-DD）")
+			return
+		}
+		to = t.Add(24*time.Hour - time.Second) // 含当天
+	}
+
+	list := s.listEntries()
+	items := make([]*QueueEntry, 0, len(list))
+	for _, e := range list {
+		if q != "" {
+			haystack := strings.ToLower(e.ID + " " + e.Name + " " + e.Uploader)
+			if !strings.Contains(haystack, q) {
+				continue
+			}
+		}
+		if statusFilter != "" && statusFilter != "all" && string(e.Status) != statusFilter {
+			continue
+		}
+		if !from.IsZero() && e.UploadedAt.Before(from) {
+			continue
+		}
+		if !to.IsZero() && e.UploadedAt.After(to) {
+			continue
+		}
+		items = append(items, e)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "items": items})
+}
+
+// approveCore 是审核通过的核心逻辑（发布到商店仓库 -> 标记 approved -> 清理暂存包）。
+// 供 handleApprove（单条）与 handleQueueBatch（批量）共用；发布未配置时返回错误。
+func (s *Store) approveCore(r *http.Request, id, user string) error {
+	entry, err := s.getEntry(id)
+	if err != nil {
+		return fmt.Errorf("找不到该插件包记录")
+	}
+	if entry.Status == StatusApproved {
+		return fmt.Errorf("已通过审核")
+	}
+	if !s.ghEnabled {
+		return fmt.Errorf("GitHub 发布未配置，无法发布")
+	}
+	if err := s.publishToStore(r, entry); err != nil {
+		return fmt.Errorf("发布到商店仓库失败: %w", sanitizeGHErr(err))
+	}
+	if err := s.Approve(id, user); err != nil {
+		log.Printf("[警告] 标记 approved 失败: %v", err)
+	}
+	s.CleanupPackage(id)
+	log.Printf("[信息] 插件 %s v%s 已由 %s 审核通过并发布", entry.ID, entry.Version, user)
+	s.writeAudit(auditEvent{Event: auditEventApprove, User: user, IP: clientIP(r), Target: id, Result: "ok", Detail: "version=" + entry.Version})
+	return nil
+}
+
+// rejectCore 是拒绝插件的核心逻辑（写拒绝原因文件 + 状态改 rejected + 清理暂存包）。
+// 供 handleReject（单条）与 handleQueueBatch（批量）共用。
+func (s *Store) rejectCore(r *http.Request, id, user, reason string) error {
+	if err := s.Reject(id, user, strings.TrimSpace(reason)); err != nil {
+		return fmt.Errorf("找不到该插件包记录")
+	}
+	log.Printf("[信息] 插件 %s 已由 %s 拒绝", id, user)
+	s.writeAudit(auditEvent{Event: auditEventReject, User: user, IP: clientIP(r), Target: id, Result: "ok", Detail: strings.TrimSpace(reason)})
+	return nil
+}
+
+// handleQueueBatch 批量通过/拒绝。
+// POST /api/queue/batch body: {"action":"approve"|"reject","ids":[...],"reason":"..."}
+func (s *Store) handleQueueBatch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var req struct {
+		Action string   `json:"action"`
+		IDs    []string `json:"ids"`
+		Reason string   `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.Action = strings.ToLower(strings.TrimSpace(req.Action))
+	if req.Action != "approve" && req.Action != "reject" {
+		writeErr(w, http.StatusBadRequest, "action 仅支持 approve 或 reject")
+		return
+	}
+	if len(req.IDs) == 0 {
+		writeErr(w, http.StatusBadRequest, "ids 不能为空")
+		return
+	}
+	if len(req.IDs) > maxBatchIDs {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("ids 最多 %d 个", maxBatchIDs))
+		return
+	}
+	user := userFrom(r.Context())
+	succeeded := make([]string, 0, len(req.IDs))
+	type failItem struct {
+		ID    string `json:"id"`
+		Error string `json:"error"`
+	}
+	failed := make([]failItem, 0)
+	for _, id := range req.IDs {
+		id = strings.TrimSpace(id)
+		var err error
+		if !safeFilename(id) {
+			err = fmt.Errorf("参数 id 非法")
+		} else if req.Action == "approve" {
+			err = s.approveCore(r, id, user)
+		} else {
+			err = s.rejectCore(r, id, user, req.Reason)
+		}
+		if err != nil {
+			failed = append(failed, failItem{ID: id, Error: err.Error()})
+			continue
+		}
+		succeeded = append(succeeded, id)
+	}
+	event := auditEventBatchReject
+	if req.Action == "approve" {
+		event = auditEventBatchApprove
+	}
+	s.writeAudit(auditEvent{
+		Event: event, User: user, IP: clientIP(r),
+		Result: "ok", Detail: fmt.Sprintf("成功 %d 个，失败 %d 个", len(succeeded), len(failed)),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":        true,
+		"succeeded": succeeded,
+		"failed":    failed,
+	})
+}
+
+// handleDiff 对比待审核更新包与 index.json 已发布版本的差异。
+// GET /api/diff?id=<pluginId>
+func (s *Store) handleDiff(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	if id == "" || !safeFilename(id) {
+		writeErr(w, http.StatusBadRequest, "参数 id 非法")
+		return
+	}
+	if !s.ghEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "GitHub 未配置，无法对比已发布版本")
+		return
+	}
+	zr, _, _, err := s.loadInboxZip(id)
+	if err != nil {
+		writeErr(w, http.StatusNotFound, "待审核包不存在或已被清理")
+		return
+	}
+	idx, err := s.publisher.fetchIndex(r.Context(), s.cfg.GHBranch)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "获取 index.json 失败: "+sanitizeGHErr(err))
+		return
+	}
+	var oldEntry *indexEntry
+	var latestTS int64 = -1
+	for i := range idx.Plugins {
+		if idx.Plugins[i].ID != id {
+			continue
+		}
+		if idx.Plugins[i].LastUpdate > latestTS {
+			latestTS = idx.Plugins[i].LastUpdate
+			oldEntry = &idx.Plugins[i]
+		}
+	}
+	if oldEntry == nil {
+		writeErr(w, http.StatusBadRequest, "不是更新包，无需对比")
+		return
+	}
+	newManifest, err := readInboxManifest(zr)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "解析待审核包 plugin.json 失败")
+		return
+	}
+
+	manifestChanges := map[string]map[string]string{}
+	addChange := func(field, oldV, newV string) {
+		if oldV != newV {
+			manifestChanges[field] = map[string]string{"old": oldV, "new": newV}
+		}
+	}
+	addChange("version", oldEntry.Version, newManifest.Version)
+	addChange("name", oldEntry.Name.Default, newManifest.Name.Default)
+	addChange("description", oldEntry.Description.Default, newManifest.Description.Default)
+	addChange("tags", strings.Join(oldEntry.Tags, ", "), strings.Join(newManifest.inferTags(), ", "))
+
+	// 已发布包内文件列表（用于文件级对比）
+	pkgRemote := fmt.Sprintf("packages/%s_%s.zip", id, oldEntry.Version)
+	oldData, _, err := s.publisher.getFile(r.Context(), pkgRemote, s.cfg.GHBranch)
+	fileChanges := map[string][]string{"added": {}, "removed": {}, "modified": {}}
+	if err == nil && len(oldData) > 0 {
+		oldZr, oerr := zip.NewReader(bytes.NewReader(oldData), int64(len(oldData)))
+		if oerr == nil {
+			oldFiles := map[string]string{}
+			for _, f := range oldZr.File {
+				if f.FileInfo().IsDir() {
+					continue
+				}
+				content, _ := readZipFile(oldZr, f.Name)
+				oldFiles[f.Name] = fmt.Sprintf("%d:%x", len(content), sha256Sum(content))
+			}
+			newFiles := map[string]string{}
+			for _, f := range zr.File {
+				if f.FileInfo().IsDir() {
+					continue
+				}
+				content, _ := readZipFile(zr, f.Name)
+				newFiles[f.Name] = fmt.Sprintf("%d:%x", len(content), sha256Sum(content))
+			}
+			for p, h := range newFiles {
+				oldH, existed := oldFiles[p]
+				if !existed {
+					fileChanges["added"] = append(fileChanges["added"], p)
+				} else if oldH != h {
+					fileChanges["modified"] = append(fileChanges["modified"], p)
+				}
+			}
+			for p := range oldFiles {
+				if _, existed := newFiles[p]; !existed {
+					fileChanges["removed"] = append(fileChanges["removed"], p)
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":              true,
+		"oldVersion":      oldEntry.Version,
+		"newVersion":      newManifest.Version,
+		"manifestChanges": manifestChanges,
+		"fileChanges":     fileChanges,
+	})
+}
+
+// handleIPBanList 查看当前仍生效的 IP 黑名单。
+// GET /api/ipban
+func (s *Store) handleIPBanList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+	banned := s.loginRL.ListBanned()
+	items := make([]map[string]any, 0, len(banned))
+	for ip, e := range banned {
+		lastFail := ""
+		if !e.LastFail.IsZero() {
+			lastFail = e.LastFail.UTC().Format(time.RFC3339)
+		}
+		items = append(items, map[string]any{
+			"ip":       ip,
+			"until":    e.LockedUntil.UTC().Format(time.RFC3339),
+			"fails":    e.Fails,
+			"lastFail": lastFail,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "banned": items})
+}
+
+// handleIPBanAdd 手动封禁 IP。
+// POST /api/ipban/add body: {"ip":"1.2.3.4","duration":"24h"|"7d"|"permanent","reason":"..."}
+func (s *Store) handleIPBanAdd(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var req struct {
+		IP       string `json:"ip"`
+		Duration string `json:"duration"`
+		Reason   string `json:"reason"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.IP = strings.TrimSpace(req.IP)
+	if net.ParseIP(req.IP) == nil {
+		writeErr(w, http.StatusBadRequest, "IP 格式非法")
+		return
+	}
+	var until time.Time
+	switch req.Duration {
+	case "24h":
+		until = time.Now().Add(24 * time.Hour)
+	case "7d":
+		until = time.Now().Add(7 * 24 * time.Hour)
+	case "permanent":
+		until = time.Now().AddDate(100, 0, 0) // 100 年，等价永久
+	default:
+		writeErr(w, http.StatusBadRequest, "duration 仅支持 24h、7d 或 permanent")
+		return
+	}
+	s.loginRL.Ban(req.IP, until)
+	untilStr := until.UTC().Format(time.RFC3339)
+	s.writeAudit(auditEvent{
+		Event: auditEventIPBanAdd, User: userFrom(r.Context()), IP: clientIP(r), Target: req.IP,
+		Result: "ok", Detail: "until=" + untilStr + "; reason=" + strings.TrimSpace(req.Reason),
+	})
+	log.Printf("[安全] 管理员 %s 手动封禁 IP %s 至 %s", userFrom(r.Context()), req.IP, untilStr)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "已封禁 " + req.IP + " 至 " + untilStr,
+	})
+}
+
+// handleIPBanRemove 手动解封 IP。
+// POST /api/ipban/remove body: {"ip":"1.2.3.4"}
+func (s *Store) handleIPBanRemove(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	var req struct {
+		IP string `json:"ip"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20)).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	req.IP = strings.TrimSpace(req.IP)
+	if net.ParseIP(req.IP) == nil {
+		writeErr(w, http.StatusBadRequest, "IP 格式非法")
+		return
+	}
+	s.loginRL.Unban(req.IP)
+	s.writeAudit(auditEvent{
+		Event: auditEventIPBanRemove, User: userFrom(r.Context()), IP: clientIP(r), Target: req.IP,
+		Result: "ok",
+	})
+	log.Printf("[安全] 管理员 %s 手动解封 IP %s", userFrom(r.Context()), req.IP)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": "已解封 " + req.IP,
+	})
+}
+
+// sha256Sum 返回内容的 SHA-256 十六进制摘要，用于文件内容变化对比。
+func sha256Sum(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }

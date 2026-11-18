@@ -10,8 +10,18 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
+
+// publishMu 串行化 GitHub 发布/下架对 index.json 的写操作，避免并发写丢失更新。
+var publishMu sync.Mutex
+
+// acquirePublishLock 获取全局发布锁，返回释放函数。approve（发布）与 unpublish（下架）都经此串行。
+func acquirePublishLock() func() {
+	publishMu.Lock()
+	return publishMu.Unlock
+}
 
 // publisher 通过 GitHub Contents API 把插件包发布到商店仓库。
 // token 只从 Config（环境变量）读取，绝不写日志或返回前端。
@@ -71,7 +81,8 @@ func (s *Store) publishToStore(r *http.Request, entry *QueueEntry) error {
 
 	// 重新解析 plugin.json（保证 name/description/tags 与原始包一致）。
 	// 上传时已校验通过，此处若失败说明暂存包被篡改/损坏，直接报错不发布。
-	manifest, err := validateZip(zipBytes)
+	// 发布流程仅管理员可触发（requireSession 保护），故按管理员跳过防冒充校验。
+	manifest, err := validateZip(zipBytes, true)
 	if err != nil {
 		return fmt.Errorf("暂存包 plugin.json 校验失败: %w", err)
 	}
@@ -149,6 +160,23 @@ func (p *publisher) updateIndex(ctx context.Context, branch string, entry *Queue
 		return err
 	}
 	return nil
+}
+
+// fetchIndex 拉取仓库 index.json 并解析为 indexFile。
+// 文件不存在或解析失败均返回错误，由调用方决定降级策略。
+func (p *publisher) fetchIndex(ctx context.Context, branch string) (*indexFile, error) {
+	data, _, err := p.getFile(ctx, "index.json", branch)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 {
+		return nil, fmt.Errorf("仓库 index.json 不存在")
+	}
+	var idx indexFile
+	if err := json.Unmarshal(data, &idx); err != nil {
+		return nil, fmt.Errorf("仓库 index.json 解析失败: %w", err)
+	}
+	return &idx, nil
 }
 
 // authorOf 返回插件作者：优先 plugin.json 的 author，否则取 id 的发布者段。
@@ -255,4 +283,117 @@ func readFileLimited(path string, limit int64) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, limit))
+}
+
+// unpublishFromStore 把插件从商店下架：先从 index.json 移除条目（用户可见列表立即消失），
+// 再删除 packages/<id>_<version>.zip。任一步失败返回明确错误。
+// 顺序说明：先改 index 再删包——即使删包失败，列表已不展示，不会出现“列表还在但包 404”的反向问题。
+func (s *Store) unpublishFromStore(ctx context.Context, id, version string) error {
+	p := s.publisher
+
+	// 1) 从 index.json 移除该 id（可选限定 version）的条目
+	removed, err := p.removeFromIndex(ctx, id, version)
+	if err != nil {
+		return fmt.Errorf("从 index.json 移除失败: %w", err)
+	}
+	_ = removed
+
+	// 2) 删除 packages/<id>_<version>.zip（仅当指定了 version）
+	if version != "" {
+		pkgRemote := fmt.Sprintf("packages/%s_%s.zip", id, version)
+		if err := p.deleteFile(ctx, pkgRemote); err != nil {
+			return fmt.Errorf("删除插件包失败: %w", err)
+		}
+	}
+	return nil
+}
+
+// removeFromIndex 读取仓库 index.json，删除指定 id（可选限定 version）的条目后写回。
+// 返回是否确实删除了条目；未找到时返回错误。
+func (p *publisher) removeFromIndex(ctx context.Context, id, version string) (bool, error) {
+	existing, existingSHA, err := p.getFile(ctx, "index.json", p.cfg.GHBranch)
+	if err != nil {
+		return false, err
+	}
+	if len(existing) == 0 {
+		return false, fmt.Errorf("仓库 index.json 不存在")
+	}
+	var idx indexFile
+	if err := json.Unmarshal(existing, &idx); err != nil {
+		return false, fmt.Errorf("仓库 index.json 解析失败: %w", err)
+	}
+
+	kept := idx.Plugins[:0]
+	removedAny := false
+	for _, e := range idx.Plugins {
+		match := e.ID == id && (version == "" || e.Version == version)
+		if match {
+			removedAny = true
+			continue
+		}
+		kept = append(kept, e)
+	}
+	if !removedAny {
+		return false, fmt.Errorf("index.json 中未找到 %s%s", id, versionLabel(version))
+	}
+	idx.Plugins = kept
+
+	out, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		return false, err
+	}
+	msg := fmt.Sprintf("下架插件 %s%s", id, versionLabel(version))
+	if err := p.putFileWithSHA(ctx, "index.json", out, msg, existingSHA, p.cfg.GHBranch); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// versionLabel 返回用于提交信息/错误提示的版本后缀（如 " v1.0.0"，空版本返回空串）。
+func versionLabel(v string) string {
+	if v == "" {
+		return ""
+	}
+	return " v" + v
+}
+
+// deleteFile 删除仓库中的文件（Contents API DELETE，需先取 SHA）。
+// 文件不存在时视为成功（幂等）。
+func (p *publisher) deleteFile(ctx context.Context, remotePath string) error {
+	_, sha, err := p.getFile(ctx, remotePath, p.cfg.GHBranch)
+	if err != nil {
+		return err
+	}
+	if sha == "" {
+		return nil // 文件不存在，视为已删除
+	}
+	payload := map[string]any{
+		"message": "删除 " + remotePath,
+		"sha":     sha,
+		"branch":  p.cfg.GHBranch,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, p.ghAPI(remotePath), bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "Bearer "+p.cfg.GHToken)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := p.client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	// 404 视为已删除（幂等）；其余 >=300 视为失败
+	if resp.StatusCode >= 300 && resp.StatusCode != http.StatusNotFound {
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("GitHub DELETE %s 返回 %d: %s", remotePath, resp.StatusCode, string(b))
+	}
+	return nil
 }

@@ -39,6 +39,12 @@ type Config struct {
 	GHBranch string // 商店仓库分支，默认 main
 
 	SessionTTL time.Duration // session 有效期，默认 12h
+
+	IPWhitelist []string // 登录限流白名单 IP（STORE_IP_WHITELIST，逗号分隔）；不写进代码/仓库
+
+	NginxAccessLog string // 源站 nginx 访问日志路径（STORE_NGINX_ACCESS_LOG），用于下载量统计；空则统计接口返回未配置
+
+	UploadToken string // 开发者上传令牌（STORE_UPLOAD_TOKEN）；空则拒绝所有上传
 }
 
 // loadConfig 从环境变量加载配置。缺失关键凭据时打日志但不崩溃，
@@ -55,6 +61,9 @@ func loadConfig() Config {
 		GHRepo:        envOr("STORE_GH_REPO", "aiverserules"),
 		GHBranch:      envOr("STORE_GH_BRANCH", "main"),
 		SessionTTL:    720 * time.Hour, // 30天
+		IPWhitelist:   parseIPList(os.Getenv("STORE_IP_WHITELIST")),
+		NginxAccessLog: envOr("STORE_NGINX_ACCESS_LOG", "/var/log/nginx/access.log"),
+		UploadToken:    strings.TrimSpace(os.Getenv("STORE_UPLOAD_TOKEN")),
 	}
 	if v := os.Getenv("STORE_SESSION_TTL_HOURS"); v != "" {
 		if h, err := strconv.Atoi(v); err == nil && h > 0 {
@@ -71,6 +80,21 @@ func envOr(key, def string) string {
 	return def
 }
 
+// parseIPList 解析逗号分隔的 IP 白名单（去除空白与空项）。
+func parseIPList(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
 // newMux 构造所有路由。安全头通过中间件统一添加。
 func newMux(s *Store) *http.ServeMux {
 	mux := http.NewServeMux()
@@ -84,12 +108,33 @@ func newMux(s *Store) *http.ServeMux {
 	mux.HandleFunc("/api/captcha/verify", s.handleCaptchaVerify)       // 校验算术题并签发一次性 token
 	mux.HandleFunc("/api/upload", s.handleUpload)                      // 上传（自身限流）
 	mux.HandleFunc("/api/login", s.handleLogin)                        // 登录（IP + 账号 双维度限流 + 算术验证 + TOTP）
+	mux.HandleFunc("/api/owner", s.handleOwner)                        // 查询插件所有者（公开，客户端更新前校验）
 
 	// 需登录的管理接口
 	mux.Handle("/api/queue", s.requireSession(http.HandlerFunc(s.handleQueue)))
 	mux.Handle("/api/approve", s.requireSession(http.HandlerFunc(s.handleApprove)))
 	mux.Handle("/api/reject", s.requireSession(http.HandlerFunc(s.handleReject)))
 	mux.Handle("/api/logout", s.requireSession(http.HandlerFunc(s.handleLogout)))
+
+	// 扩展管理接口（均需登录）：下架 / 审计日志 / 下载量统计 / 待审核包下载
+	mux.Handle("/api/unpublish", s.requireSession(http.HandlerFunc(s.handleUnpublish)))
+	mux.Handle("/api/audit", s.requireSession(http.HandlerFunc(s.handleAudit)))
+	mux.Handle("/api/stats", s.requireSession(http.HandlerFunc(s.handleStats)))
+	mux.Handle("/api/pending-download", s.requireSession(http.HandlerFunc(s.handlePendingDownload)))
+	mux.Handle("/api/published", s.requireSession(http.HandlerFunc(s.handlePublished)))
+	mux.Handle("/api/published-download", s.requireSession(http.HandlerFunc(s.handlePublishedDownload)))
+
+	// 扩展管理接口（均需登录）：包内容预览/编辑 / 搜索筛选 / 批量操作 / 更新对比 / IP 黑名单
+	mux.Handle("/api/inspect", s.requireSession(http.HandlerFunc(s.handleInspect)))
+	mux.Handle("/api/inspect/file", s.requireSession(http.HandlerFunc(s.handleInspectFile)))
+	mux.Handle("/api/inspect/edit", s.requireSession(http.HandlerFunc(s.handleInspectEdit)))
+	mux.Handle("/api/queue/search", s.requireSession(http.HandlerFunc(s.handleQueueSearch)))
+	mux.Handle("/api/queue/batch", s.requireSession(http.HandlerFunc(s.handleQueueBatch)))
+	mux.Handle("/api/diff", s.requireSession(http.HandlerFunc(s.handleDiff)))
+	mux.Handle("/api/ipban", s.requireSession(http.HandlerFunc(s.handleIPBanList)))
+	mux.Handle("/api/ipban/add", s.requireSession(http.HandlerFunc(s.handleIPBanAdd)))
+	mux.Handle("/api/ipban/remove", s.requireSession(http.HandlerFunc(s.handleIPBanRemove)))
+	mux.Handle("/api/owner/change", s.requireSession(http.HandlerFunc(s.handleOwnerChange))) // 修改待审核插件所有者
 
 	// 旧 /admin/api/ 前缀保留向后兼容
 	mux.HandleFunc("/admin/api/upload", s.handleUpload)

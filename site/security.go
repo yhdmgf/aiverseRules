@@ -156,6 +156,51 @@ func (rl *rateLimiter) Success(key string) {
 	}
 }
 
+// Ban 手动封禁某个 key（如 IP），锁定至 until。用于后台 IP 黑名单管理。
+// until 为零值或已过去的时间时视为无效，直接忽略。
+func (rl *rateLimiter) Ban(key string, until time.Time) {
+	if until.IsZero() || !until.After(time.Now()) {
+		return
+	}
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	e := rl.entries[key]
+	if e == nil {
+		e = &rateEntry{}
+		rl.entries[key] = e
+	}
+	// 若已有更晚的封禁，保留更严格的截止时间
+	if until.After(e.LockedUntil) {
+		e.LockedUntil = until
+	}
+	rl.save()
+}
+
+// Unban 手动解封某个 key：删除其条目并持久化。key 不存在时静默返回（幂等）。
+func (rl *rateLimiter) Unban(key string) {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	if _, ok := rl.entries[key]; ok {
+		delete(rl.entries, key)
+		rl.save()
+	}
+}
+
+// ListBanned 返回当前仍处于锁定期（LockedUntil > now）的 key 及其条目快照。
+// 返回的是副本，调用方修改不影响内部状态。永久封禁（远期 LockedUntil）同样包含在内。
+func (rl *rateLimiter) ListBanned() map[string]rateEntry {
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	now := time.Now()
+	out := make(map[string]rateEntry)
+	for key, e := range rl.entries {
+		if e != nil && e.LockedUntil.After(now) {
+			out[key] = *e
+		}
+	}
+	return out
+}
+
 // clientIP 从请求中提取客户端真实 IP。
 //
 // 安全说明：X-Forwarded-For 头可由客户端伪造。本服务仅监听 127.0.0.1、由本机

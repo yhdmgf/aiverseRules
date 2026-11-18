@@ -34,6 +34,7 @@ type QueueEntry struct {
 	ReviewedBy     string       `json:"reviewed_by,omitempty"`
 	ReviewedAt     *time.Time   `json:"reviewed_at,omitempty"`
 	RejectReason   string       `json:"reject_reason,omitempty"`
+	IsUpdate       bool         `json:"is_update,omitempty"` // 同 id 新版本上传时为 true，后台显示“更新”
 }
 
 // Store 封装数据目录与各子组件（session、限流、发布）。
@@ -44,6 +45,8 @@ type Store struct {
 	rejDir string // data/rejected  拒绝原因
 	sessDir string // data/sessions  会话
 	pkgDir string // data/packages  发布缓存
+	auditPath string // data/audit.log 审计日志（JSON Lines）
+	statsPath string // data/download_stats.json 下载量统计持久化
 
 	sessions   *sessionStore
 	loginRL    *rateLimiter // IP 维度登录限流（data/ipban.json）
@@ -64,6 +67,8 @@ func NewStore(cfg Config) (*Store, error) {
 		rejDir: filepath.Join(cfg.DataDir, "rejected"),
 		sessDir: filepath.Join(cfg.DataDir, "sessions"),
 		pkgDir: filepath.Join(cfg.DataDir, "packages"),
+		auditPath: filepath.Join(cfg.DataDir, "audit.log"),
+		statsPath: filepath.Join(cfg.DataDir, "download_stats.json"),
 	}
 	for _, d := range []string{s.inbox, s.queue, s.rejDir, s.sessDir, s.pkgDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {

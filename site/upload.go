@@ -10,10 +10,12 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -28,6 +30,25 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
 		return
 	}
+
+	// 访问控制：已登录管理员（后台 /admin 上传）直接放行；否则要求开发者上传令牌。
+	// 这样后台原有的管理员上传不受影响（跟登录同一套密钥），令牌仅作为未登录开发者的可选通道。
+	isAdmin := false
+	if c, err := r.Cookie(sessionCookie); err == nil && c.Value != "" {
+		if _, ok := s.sessions.Get(c.Value); ok {
+			isAdmin = true
+		}
+	}
+	if !isAdmin {
+		// 带正确上传令牌的可信开发者：视为可信（跳过保留字等校验，只大小/格式限制）。
+		// 无令牌或令牌错误：不拒绡，作为普通用户上传，走完整 API 校验（保留字、zip、文件名格式）。
+		// 令牌仅用于区分信任级别，不是上传的硬门槛。
+		tok := r.Header.Get("X-Upload-Token")
+		if s.cfg.UploadToken != "" && safeEqual(tok, s.cfg.UploadToken) {
+			isAdmin = true
+		}
+	}
+
 	ip := clientIP(r)
 	if s.uploadRL.Blocked(ip) {
 		writeErr(w, http.StatusTooManyRequests, "上传过于频繁，请稍后再试")
@@ -41,10 +62,11 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 可选的上传者标识（表单字段 uploader），未提供则记为 anonymous
+	// 必填的上传者标识（表单字段 uploader），用于插件所有者校验
 	uploader := strings.TrimSpace(r.FormValue("uploader"))
 	if uploader == "" {
-		uploader = "anonymous"
+		writeErr(w, http.StatusBadRequest, "缺少上传者标识（uploader 字段必填）")
+		return
 	}
 
 	file, header, err := r.FormFile(uploadFormField)
@@ -79,10 +101,61 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3) 解析 zip 并做安全校验（Zip Slip / 黑名单扩展 / 单文件大小）
-	manifest, err := validateZip(data)
+	manifest, err := validateZip(data, isAdmin)
 	if err != nil {
 		s.uploadRL.Fail(ip)
 		writeErr(w, http.StatusBadRequest, fmt.Sprintf("校验失败: %v", err))
+		return
+	}
+
+	// 3.5) 文件名强制格式：必须形如 {id}_{version}.zip，且与包内 plugin.json 一致
+	fileID, fileVersion, perr := parsePkgFilename(header.Filename)
+	if perr != nil {
+		s.uploadRL.Fail(ip)
+		writeErr(w, http.StatusBadRequest, "文件名必须形如 {插件id}_{版本号}.zip（例如 aiverse.desktop-pet_1.0.0.zip）："+perr.Error())
+		return
+	}
+	if fileID != manifest.ID {
+		s.uploadRL.Fail(ip)
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("文件名中的插件 id（%s）与包内 plugin.json 的 id（%s）不一致", fileID, manifest.ID))
+		return
+	}
+	if fileVersion != manifest.Version {
+		s.uploadRL.Fail(ip)
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf("文件名中的版本号（%s）与包内 plugin.json 的 version（%s）不一致", fileVersion, manifest.Version))
+		return
+	}
+
+	// 3.55) 所有者校验：插件已登记所有者时，非管理员的 uploader 必须匹配
+	if !isAdmin {
+		if err := s.checkPluginOwner(manifest.ID, uploader); err != nil {
+			s.uploadRL.Fail(ip)
+			writeErr(w, http.StatusForbidden, err.Error())
+			return
+		}
+	}
+
+	// 3.6) 同 id + 同版本已发布则拒绝重复上传；不同版本则视为“更新”
+	previous, _ := s.getEntry(manifest.ID)
+	isUpdate := previous != nil && previous.Version != manifest.Version
+	if previous != nil && previous.Status == StatusApproved && previous.Version == manifest.Version {
+		s.uploadRL.Fail(ip)
+		writeErr(w, http.StatusConflict, fmt.Sprintf("插件 %s v%s 已发布，请更新版本号后再上传", manifest.ID, manifest.Version))
+		return
+	}
+
+	// dry-run 预检模式：只做上述全部校验，不落盘、不写元数据，供上传端预先检查
+	if r.URL.Query().Get("dryrun") == "1" {
+		s.uploadRL.Success(ip)
+		s.writeAudit(auditEvent{Event: auditEventUploadDryRun, User: uploader, IP: ip, Target: manifest.ID, Result: "ok", Detail: "version=" + manifest.Version})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":         true,
+			"dryrun":     true,
+			"id":         manifest.ID,
+			"version":    manifest.Version,
+			"is_update":  isUpdate,
+			"message":    "预检通过，包结构与文件名均合法" + updateSuffix(isUpdate),
+		})
 		return
 	}
 
@@ -114,6 +187,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		SHA256:       shaHex,
 		Status:       StatusPending,
 		Size:         int64(len(data)),
+		IsUpdate:     isUpdate,
 	}
 	if err := s.saveEntry(entry); err != nil {
 		log.Printf("[错误] 写审核元数据失败: %v", err)
@@ -123,17 +197,103 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 
 	s.uploadRL.Success(ip)
 	log.Printf("[信息] 收到插件包 %s v%s（来自 %s，%d 字节）", manifest.ID, manifest.Version, ip, len(data))
+	s.writeAudit(auditEvent{Event: auditEventUpload, User: uploader, IP: ip, Target: manifest.ID, Result: "ok", Detail: "version=" + manifest.Version})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":      true,
-		"id":      manifest.ID,
-		"version": manifest.Version,
-		"message": "上传成功，已进入待审核队列",
+		"ok":         true,
+		"id":         manifest.ID,
+		"version":    manifest.Version,
+		"is_update":  isUpdate,
+		"message":    "上传成功，已进入待审核队列" + updateSuffix(isUpdate),
 	})
+}
+
+// checkPluginOwner 校验插件所有者：若该插件已登记上传者（待审核队列）且与本次 uploader 不一致，
+// 则拒绝上传（防冒名更新他人插件）。管理员调用已在调用方拦截，这里只做匹配比较。
+// 注意：错误信息不回显具体作者名（隐私保护）。
+func (s *Store) checkPluginOwner(pluginID, uploader string) error {
+	prev, err := s.getEntry(pluginID)
+	if err != nil || prev == nil {
+		return nil // 队列无记录（含未登记上传者）则放行
+	}
+	if prev.Uploader != "" && prev.Uploader != uploader {
+		return fmt.Errorf("该插件属于其他作者，你不能更新（当前所有者已登记）")
+	}
+	return nil
+}
+
+// updateSuffix 返回“更新”提示后缀，用于上传响应 message。
+func updateSuffix(isUpdate bool) string {
+	if isUpdate {
+		return "（检测为已有插件的新版本更新）"
+	}
+	return ""
+}
+
+// parsePkgFilename 解析上传包文件名，要求形如 {id}_{version}.zip。
+// 返回 id、version 与错误。id 允许字母/数字/-/_ 与一个“.”分隔的发布者段；
+// version 必须为三段数字（如 1.0.0），每段 1-3 位、禁前导零。
+// 注意：以最后一个“_”分割，因为 id 本身可能含“-”但不含“_”，version 不含“_”。
+func parsePkgFilename(name string) (id, version string, err error) {
+	base := filepath.Base(name)
+	if !strings.EqualFold(filepath.Ext(base), ".zip") {
+		return "", "", fmt.Errorf("扩展名必须是 .zip")
+	}
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	i := strings.LastIndex(stem, "_")
+	if i <= 0 || i == len(stem)-1 {
+		return "", "", fmt.Errorf("缺少 _<版本号> 部分")
+	}
+	id = stem[:i]
+	version = stem[i+1:]
+	if !isValidPkgID(id) {
+		return "", "", fmt.Errorf("插件 id 格式不合法: %q", id)
+	}
+	if !isValidPkgVersion(version) {
+		return "", "", fmt.Errorf("版本号格式不合法: %q（应为三段数字如 1.0.0）", version)
+	}
+	return id, version, nil
+}
+
+// isValidPkgID 校验插件 id：形如 发布者.插件名，字符限字母/数字/-/_。
+func isValidPkgID(id string) bool {
+	if strings.Count(id, ".") != 1 {
+		return false
+	}
+	for _, c := range id {
+		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'
+		if !ok {
+			return false
+		}
+	}
+	return len(id) > 0
+}
+
+// isValidPkgVersion 校验版本号：三段数字，每段 1-3 位，禁前导零（除单独的 "0"）。
+func isValidPkgVersion(v string) bool {
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, p := range parts {
+		if len(p) < 1 || len(p) > 3 {
+			return false
+		}
+		for _, c := range p {
+			if c < '0' || c > '9' {
+				return false
+			}
+		}
+		if len(p) > 1 && p[0] == '0' {
+			return false
+		}
+	}
+	return true
 }
 
 // validateZip 校验 zip 包内容安全，并从根 plugin.json 解析出 Manifest。
 // 任一条目违反规则即返回错误（不落地文件）。
-func validateZip(data []byte) (*Manifest, error) {
+func validateZip(data []byte, isAdmin bool) (*Manifest, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, fmt.Errorf("不是合法的 zip 包: %w", err)
@@ -201,7 +361,7 @@ func validateZip(data []byte) (*Manifest, error) {
 	if err := dec.Decode(&m); err != nil {
 		return nil, fmt.Errorf("plugin.json 解析失败: %w", err)
 	}
-	if err := validateManifest(&m); err != nil {
+	if err := validateManifest(&m, isAdmin); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -245,4 +405,136 @@ func checkZipEntryName(name string) error {
 // isRootPluginJSON 判断条目是否为包根的 plugin.json（不含目录前缀）。
 func isRootPluginJSON(name string) bool {
 	return name == "plugin.json" || name == "./plugin.json"
+}
+
+// ---------- 包内文件预览 / 编辑辅助（审核后台用） ----------
+
+// maxPreviewSize 预览/编辑单个包内文件的字节上限。
+const maxPreviewSize = 1 << 20 // 1MB
+
+// normalizeZipPath 校验并规范化包内相对路径，防路径穿越（zip slip）。
+// 返回与 zip 条目名可直接比较的清理后路径；包含 .. / 绝对路径 / 反斜杠时返回 false。
+func normalizeZipPath(p string) (string, bool) {
+	p = strings.TrimSpace(p)
+	if p == "" {
+		return "", false
+	}
+	if strings.Contains(p, "\\") || strings.HasPrefix(p, "/") {
+		return "", false
+	}
+	cleaned := filepath.Clean("/" + p) // 以 / 为根拼后 Clean，消化 .. 等相对段
+	cleaned = strings.TrimPrefix(cleaned, "/")
+	if cleaned == "" || cleaned == "." {
+		return "", false
+	}
+	if cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", false
+	}
+	return cleaned, true
+}
+
+// isTextContent 判断一段字节是否可作为文本预览：
+// 前 512 字节内含 NUL（0x00）或整体非合法 UTF-8 则视为二进制。
+func isTextContent(b []byte) bool {
+	head := b
+	if len(head) > 512 {
+		head = head[:512]
+	}
+	if bytes.IndexByte(head, 0) >= 0 {
+		return false
+	}
+	return utf8.Valid(b)
+}
+
+// readZipFile 从 zip 中按路径读取单个文件内容。
+// 目录条目或路径不存在返回 os.ErrNotExist；调用方需自行限制大小。
+func readZipFile(zr *zip.Reader, filePath string) ([]byte, error) {
+	cleaned, ok := normalizeZipPath(filePath)
+	if !ok {
+		return nil, os.ErrInvalid
+	}
+	for _, f := range zr.File {
+		name := strings.TrimSuffix(f.Name, "/")
+		if f.FileInfo().IsDir() || name != cleaned {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		content, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		return content, nil
+	}
+	return nil, os.ErrNotExist
+}
+
+// replaceZipFile 返回把 zipData 内指定 path 的文件内容替换为 newContent 后的新 zip 字节。
+// 其余条目原样复制；指定的 path 必须已存在，否则报错（不新增文件）。
+func replaceZipFile(zipData []byte, filePath string, newContent []byte) ([]byte, error) {
+	cleaned, ok := normalizeZipPath(filePath)
+	if !ok {
+		return nil, fmt.Errorf("包内路径非法")
+	}
+	zr, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
+	if err != nil {
+		return nil, fmt.Errorf("不是合法的 zip 包: %w", err)
+	}
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	replaced := false
+	for _, f := range zr.File {
+		if err := checkZipEntryName(f.Name); err != nil {
+			return nil, err
+		}
+		if !f.FileInfo().IsDir() && strings.TrimSuffix(f.Name, "/") == cleaned {
+			w, err := zw.Create(f.Name)
+			if err != nil {
+				return nil, err
+			}
+			if _, err := w.Write(newContent); err != nil {
+				return nil, err
+			}
+			replaced = true
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		// 克隆原始 FileHeader，保留目录标志位/时间/权限等元数据，避免重组后丢目录条目
+		fh := cloneZipFileHeader(f.FileHeader)
+		w, err := zw.CreateHeader(&fh)
+		if err != nil {
+			rc.Close()
+			return nil, err
+		}
+		if !f.FileInfo().IsDir() {
+			if _, err := io.Copy(w, rc); err != nil {
+				rc.Close()
+				return nil, err
+			}
+		}
+		rc.Close()
+	}
+	if !replaced {
+		zw.Close()
+		return nil, os.ErrNotExist
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// cloneZipFileHeader 复制一个 zip.FileHeader（值拷贝，含切片字段独立），供重组 zip 时保留原条目元数据。
+func cloneZipFileHeader(h zip.FileHeader) zip.FileHeader {
+	out := h
+	out.Extra = append([]byte(nil), h.Extra...)
+	out.Comment = h.Comment
+	out.NonUTF8 = h.NonUTF8
+	return out
 }

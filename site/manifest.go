@@ -206,7 +206,8 @@ func normalizeTags(in []string) []string {
 }
 
 // validateManifest 校验 plugin.json 关键字段，返回可读的错误原因。
-func validateManifest(m *Manifest) error {
+// isAdmin=true 时（后台管理员上传官方包）跳过防冒充保留字校验。
+func validateManifest(m *Manifest, isAdmin bool) error {
 	if m == nil {
 		return fmt.Errorf("plugin.json 解析结果为空")
 	}
@@ -232,11 +233,13 @@ func validateManifest(m *Manifest) error {
 	//   1) author 字段直接填 aiverse；
 	//   2) author 留空时 authorOf 会回退取 id 的发布者段，故发布者段也不能是 aiverse。
 	// 用精确匹配（不分大小写），不误伤 aiverse-test 等含 aiverse 但非官方的作者。
-	if strings.EqualFold(strings.TrimSpace(m.Author), reservedAuthor) {
-		return fmt.Errorf("author %q 为官方保留字，不可用作插件作者", reservedAuthor)
-	}
-	if publisher := idPublisher(m.ID); strings.EqualFold(publisher, reservedAuthor) {
-		return fmt.Errorf("插件 id 的发布者段 %q 为官方保留字，请换一个发布者名", publisher)
+	if !isAdmin {
+		if strings.EqualFold(strings.TrimSpace(m.Author), reservedAuthor) {
+			return fmt.Errorf("author %q 为官方保留字，不可用作插件作者", reservedAuthor)
+		}
+		if publisher := idPublisher(m.ID); strings.EqualFold(publisher, reservedAuthor) {
+			return fmt.Errorf("插件 id 的发布者段 %q 为官方保留字，请换一个发布者名", publisher)
+		}
 	}
 	if !semverPattern.MatchString(m.Version) {
 		return fmt.Errorf("version 必须为 semver（如 1.2.0），当前不合法: %q", m.Version)
