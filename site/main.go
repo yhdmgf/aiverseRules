@@ -135,6 +135,9 @@ func newMux(s *Store) *http.ServeMux {
 	mux.Handle("/api/ipban/add", s.requireSession(http.HandlerFunc(s.handleIPBanAdd)))
 	mux.Handle("/api/ipban/remove", s.requireSession(http.HandlerFunc(s.handleIPBanRemove)))
 	mux.Handle("/api/owner/change", s.requireSession(http.HandlerFunc(s.handleOwnerChange))) // 修改待审核插件所有者
+	mux.Handle("/api/authors", s.requireSession(http.HandlerFunc(s.handleAuthors))) // 列出所有作者
+	mux.Handle("/api/author/modify", s.requireSession(http.HandlerFunc(s.handleAuthorModify))) // 修改已发布插件作者
+	mux.Handle("/api/author/rename", s.requireSession(http.HandlerFunc(s.handleAuthorRename))) // 批量修改作者名
 
 	// 旧 /admin/api/ 前缀保留向后兼容
 	mux.HandleFunc("/admin/api/upload", s.handleUpload)
