@@ -1348,3 +1348,251 @@ func sha256Sum(b []byte) string {
 	sum := sha256.Sum256(b)
 	return hex.EncodeToString(sum[:])
 }
+
+// handleAuthors 列出所有作者及其插件数量、最后更新时间（管理员专用）。
+// GET /api/authors
+// 同时统计已发布（GitHub index.json）和待审核队列（本地 data/queue/）的插件。
+func (s *Store) handleAuthors(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 GET")
+		return
+	}
+
+	type authorInfo struct {
+		PluginCount    int   `json:"plugin_count"`
+		PublishedCount int   `json:"published_count"`
+		PendingCount   int   `json:"pending_count"`
+		LastUpdate     int64 `json:"last_update"`
+	}
+	authorMap := make(map[string]*authorInfo)
+
+	// 1. 从 GitHub index.json 统计已发布插件
+	if s.ghEnabled {
+		idx, err := s.publisher.fetchIndex(r.Context(), s.cfg.GHBranch)
+		if err == nil {
+			for _, p := range idx.Plugins {
+				author := p.Author
+				if author == "" {
+					author = "(未知)"
+				}
+				if _, ok := authorMap[author]; !ok {
+					authorMap[author] = &authorInfo{}
+				}
+				authorMap[author].PluginCount++
+				authorMap[author].PublishedCount++
+				if p.LastUpdate > authorMap[author].LastUpdate {
+					authorMap[author].LastUpdate = p.LastUpdate
+				}
+			}
+		}
+	}
+
+	// 2. 从本地队列统计所有插件（pending/approved/rejected）
+	entries := s.listEntries()
+	for _, entry := range entries {
+		author := entry.Uploader
+		if author == "" {
+			author = "(未知)"
+		}
+		if _, ok := authorMap[author]; !ok {
+			authorMap[author] = &authorInfo{}
+		}
+		authorMap[author].PluginCount++
+		if entry.Status != StatusApproved {
+			authorMap[author].PendingCount++
+		}
+		// 解析上传时间
+		if !entry.UploadedAt.IsZero() {
+			ts := entry.UploadedAt.UnixMilli()
+			if ts > authorMap[author].LastUpdate {
+				authorMap[author].LastUpdate = ts
+			}
+		}
+	}
+
+	// 转换为数组
+	items := make([]map[string]any, 0, len(authorMap))
+	for author, info := range authorMap {
+		items = append(items, map[string]any{
+			"author":          author,
+			"plugin_count":    info.PluginCount,
+			"published_count": info.PublishedCount,
+			"pending_count":   info.PendingCount,
+			"last_update":     info.LastUpdate,
+		})
+	}
+
+	// 按最后更新时间降序排序
+	for i := 0; i < len(items); i++ {
+		for j := i + 1; j < len(items); j++ {
+			if items[i]["last_update"].(int64) < items[j]["last_update"].(int64) {
+				items[i], items[j] = items[j], items[i]
+			}
+		}
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"items": items,
+		"total": len(items),
+	})
+}
+
+// handleAuthorModify 修改已发布插件的作者（管理员专用）。
+// POST /api/author/modify  请求体：{"plugin_id":"xxx","new_author":"新作者"}
+// 直接更新 GitHub index.json 里的 author 字段。
+func (s *Store) handleAuthorModify(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	if !s.ghEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "GitHub 未配置")
+		return
+	}
+	var req struct {
+		PluginID  string `json:"plugin_id"`
+		NewAuthor string `json:"new_author"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误")
+		return
+	}
+	req.PluginID = strings.TrimSpace(req.PluginID)
+	req.NewAuthor = strings.TrimSpace(req.NewAuthor)
+	if req.PluginID == "" || req.NewAuthor == "" {
+		writeErr(w, http.StatusBadRequest, "plugin_id 和 new_author 不能为空")
+		return
+	}
+
+	// 获取 index.json
+	ctx := r.Context()
+	data, sha, err := s.publisher.getFile(ctx, "index.json", s.cfg.GHBranch)
+	if err != nil {
+		writeErr(w, http.StatusBadGateway, "获取 index.json 失败: "+sanitizeGHErr(err))
+		return
+	}
+
+	var idx indexFile
+	if len(data) > 0 {
+		if err := json.Unmarshal(data, &idx); err != nil {
+			writeErr(w, http.StatusInternalServerError, "index.json 解析失败")
+			return
+		}
+	}
+
+	// 找到插件并修改 author
+	found := false
+	oldAuthor := ""
+	for i := range idx.Plugins {
+		if idx.Plugins[i].ID == req.PluginID {
+			oldAuthor = idx.Plugins[i].Author
+			idx.Plugins[i].Author = req.NewAuthor
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, http.StatusNotFound, "插件不存在")
+		return
+	}
+
+	// 写回 index.json
+	out, err := json.MarshalIndent(idx, "", "  ")
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, "序列化失败")
+		return
+	}
+	msg := fmt.Sprintf("修改插件 %s 的作者：%s -> %s", req.PluginID, oldAuthor, req.NewAuthor)
+	if err := s.publisher.putFileWithSHA(ctx, "index.json", out, msg, sha, s.cfg.GHBranch); err != nil {
+		writeErr(w, http.StatusBadGateway, "推送 index.json 失败: "+sanitizeGHErr(err))
+		return
+	}
+
+	user := userFrom(r.Context())
+	s.writeAudit(auditEvent{Event: auditEventOwnerChange, User: user, IP: clientIP(r), Target: req.PluginID, Result: "ok", Detail: "已发布: " + oldAuthor + " -> " + req.NewAuthor})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":         true,
+		"plugin_id":  req.PluginID,
+		"old_author": oldAuthor,
+		"new_author": req.NewAuthor,
+		"message":    "已发布插件的作者已修改",
+	})
+}
+
+// handleAuthorRename 批量修改作者名（管理员专用）。
+// POST /api/author/rename  请求体：{"old_author":"旧作者","new_author":"新作者"}
+// 同时修改 GitHub index.json 里所有该作者的插件，以及本地队列里的 uploader。
+func (s *Store) handleAuthorRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
+		return
+	}
+	if !s.ghEnabled {
+		writeErr(w, http.StatusServiceUnavailable, "GitHub 未配置")
+		return
+	}
+	var req struct {
+		OldAuthor string `json:"old_author"`
+		NewAuthor string `json:"new_author"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求体格式错误")
+		return
+	}
+	req.OldAuthor = strings.TrimSpace(req.OldAuthor)
+	req.NewAuthor = strings.TrimSpace(req.NewAuthor)
+	if req.OldAuthor == "" || req.NewAuthor == "" {
+		writeErr(w, http.StatusBadRequest, "old_author 和 new_author 不能为空")
+		return
+	}
+
+	ctx := r.Context()
+	modifiedCount := 0
+
+	// 1. 修改 GitHub index.json 里所有该作者的插件
+	data, sha, err := s.publisher.getFile(ctx, "index.json", s.cfg.GHBranch)
+	if err == nil && len(data) > 0 {
+		var idx indexFile
+		if err := json.Unmarshal(data, &idx); err == nil {
+			for i := range idx.Plugins {
+				if idx.Plugins[i].Author == req.OldAuthor {
+					idx.Plugins[i].Author = req.NewAuthor
+					modifiedCount++
+				}
+			}
+			// 写回 index.json
+			out, err := json.MarshalIndent(idx, "", "  ")
+			if err == nil {
+				msg := fmt.Sprintf("批量修改作者：%s -> %s", req.OldAuthor, req.NewAuthor)
+				if err := s.publisher.putFileWithSHA(ctx, "index.json", out, msg, sha, s.cfg.GHBranch); err != nil {
+					writeErr(w, http.StatusBadGateway, "推送 index.json 失败: "+sanitizeGHErr(err))
+					return
+				}
+			}
+		}
+	}
+
+	// 2. 修改本地队列里的 uploader
+	entries := s.listEntries()
+	queueModified := 0
+	for _, entry := range entries {
+		if entry.Uploader == req.OldAuthor {
+			entry.Uploader = req.NewAuthor
+			if err := s.saveEntry(entry); err == nil {
+				queueModified++
+			}
+		}
+	}
+
+	user := userFrom(r.Context())
+	s.writeAudit(auditEvent{Event: auditEventOwnerChange, User: user, IP: clientIP(r), Target: req.OldAuthor, Result: "ok", Detail: "批量重命名: " + req.OldAuthor + " -> " + req.NewAuthor})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":             true,
+		"old_author":     req.OldAuthor,
+		"new_author":     req.NewAuthor,
+		"modified_count": modifiedCount,
+		"queue_modified": queueModified,
+		"message":        fmt.Sprintf("已修改 %d 个已发布插件和 %d 个队列插件", modifiedCount, queueModified),
+	})
+}
