@@ -135,6 +135,22 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 3.56) 作者名一致性校验：plugin.json 里的 author 必须和表单字段 uploader 一致
+	// 管理员豁免此校验（可以上传任何插件）
+	if !isAdmin {
+		manifestAuthor := strings.TrimSpace(manifest.Author)
+		if manifestAuthor == "" {
+			s.uploadRL.Fail(ip)
+			writeErr(w, http.StatusBadRequest, "plugin.json 缺少 author 字段，请填写作者名")
+			return
+		}
+		if manifestAuthor != uploader {
+			s.uploadRL.Fail(ip)
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("plugin.json 里的 author（%s）与上传时填写的作者名（%s）不一致，请输入正确的作者", manifestAuthor, uploader))
+			return
+		}
+	}
+
 	// 3.6) 同 id + 同版本已发布则拒绝重复上传；不同版本则视为“更新”
 	previous, _ := s.getEntry(manifest.ID)
 	isUpdate := previous != nil && previous.Version != manifest.Version
