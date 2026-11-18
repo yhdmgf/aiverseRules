@@ -56,6 +56,7 @@
         <span class="topbar-name">AiVerse 插件商店</span>
       </div>
       <div class="topbar-right">
+        <button id="upload-btn" class="btn btn-ghost" title="上传插件包到待审核队列">上传</button>
         <button id="logout-btn" class="btn btn-ghost" title="退出登录">退出</button>
       </div>
     </header>
@@ -97,13 +98,182 @@
     </section>
 
     <nav class="tabs">
-      <button class="tab active" data-tab="pending">待审核 <span id="count-pending" class="badge">0</span></button>
+      <button class="tab active" data-tab="all">全部 <span id="count-all" class="badge">0</span></button>
+      <button class="tab" data-tab="pending">待审核 <span id="count-pending" class="badge">0</span></button>
       <button class="tab" data-tab="done">已审核 <span id="count-done" class="badge">0</span></button>
+      <button class="tab" data-tab="authors">作者</button>
+      <button class="tab" data-tab="audit">审计日志</button>
+      <button class="tab" data-tab="security">安全</button>
+      <button class="tab" data-tab="stats">下载统计</button>
     </nav>
+
+    <!-- 搜索/筛选栏（仅 pending / done 列表显示） -->
+    <section id="search-bar" class="search-bar" hidden>
+      <label class="select-all-label">
+        <input type="checkbox" id="select-all">
+        <span>全选</span>
+      </label>
+      <form id="search-form" class="search-controls" autocomplete="off">
+        <input type="text" id="search-q" placeholder="搜索 id / 名称 / 上传者">
+        <select id="search-status">
+          <option value="">全部状态</option>
+          <option value="pending">待审核</option>
+          <option value="approved">已通过</option>
+          <option value="rejected">已拒绝</option>
+        </select>
+        <input type="date" id="search-from" title="上传日期从">
+        <input type="date" id="search-to" title="上传日期到">
+        <button type="submit" class="btn btn-ghost">搜索</button>
+      </form>
+    </section>
+
+    <p id="batch-result" class="batch-result" hidden></p>
 
     <main id="list" class="list">
       <p class="muted loading">加载中…</p>
     </main>
+
+    <!-- 待审核包内容预览 + 编辑面板（点“查看内容”展开） -->
+    <section id="preview-panel" class="preview-panel" hidden>
+      <div class="preview-head">
+        <h2>包内容预览</h2>
+        <span id="preview-target" class="preview-target muted"></span>
+        <div class="preview-head-actions">
+          <button type="button" id="preview-close" class="btn btn-ghost">收起</button>
+        </div>
+      </div>
+      <p id="preview-manifest" class="preview-manifest muted"></p>
+      <div class="preview-body">
+        <div id="preview-tree" class="file-tree"></div>
+        <div class="file-editor">
+          <p id="preview-file-path" class="file-path muted">选择左侧文件查看内容</p>
+          <textarea id="preview-content" rows="16" spellcheck="false"
+            placeholder="文件内容（可编辑）"></textarea>
+          <div class="file-editor-actions">
+            <span id="preview-status" class="preview-status muted" hidden></span>
+            <button type="button" id="preview-save" class="btn">保存修改</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 全部已发布插件容器（tab=all 时显示，默认） -->
+    <main id="all-list" class="list" hidden>
+      <p class="muted loading">加载中…</p>
+    </main>
+
+    <!-- 审计日志容器（tab=audit 时显示） -->
+    <main id="audit-list" class="list" hidden>
+      <p class="muted loading">加载中…</p>
+    </main>
+
+    <!-- 下载统计容器（tab=stats 时显示） -->
+    <main id="stats-list" class="list" hidden>
+      <p class="muted loading">加载中…</p>
+    </main>
+
+    <!-- 作者列表容器（tab=authors 时显示） -->
+    <section id="authors-panel" class="list" hidden>
+      <div class="search-bar">
+        <form id="author-search-form" class="search-controls" autocomplete="off">
+          <input type="text" id="author-search" placeholder="搜索作者名...">
+          <button type="submit" class="btn">搜索</button>
+        </form>
+      </div>
+      <div id="authors-list" class="list">
+        <p class="muted loading">加载中…</p>
+      </div>
+    </section>
+
+    <!-- 安全容器：IP 黑名单（tab=security 时显示） -->
+    <section id="security-panel" class="list" hidden>
+      <form id="ban-form" class="card ban-form" autocomplete="off">
+        <h2>手动封禁 IP</h2>
+        <div class="ban-fields">
+          <input type="text" id="ban-ip" placeholder="如 1.2.3.4" maxlength="45">
+          <select id="ban-duration">
+            <option value="24h">24 小时</option>
+            <option value="7d">7 天</option>
+            <option value="permanent">永久</option>
+          </select>
+          <input type="text" id="ban-reason" placeholder="如 恶意攻击" maxlength="120">
+          <button type="submit" id="ban-submit" class="btn btn-danger">封禁</button>
+        </div>
+        <p id="ban-status" class="muted" hidden></p>
+      </form>
+      <div id="ban-table-wrap" class="ban-table-wrap">
+        <p class="muted loading">加载中…</p>
+      </div>
+    </section>
+
+    <!-- 批量操作浮动栏 -->
+    <div id="batch-bar" class="batch-bar" hidden>
+      <span id="batch-count" class="batch-count">已选 0 项</span>
+      <button type="button" id="batch-approve" class="btn">批量通过</button>
+      <button type="button" id="batch-reject" class="btn btn-danger">批量拒绝</button>
+    </div>
+
+    <!-- 上传插件弹窗（后台上传入口，需登录） -->
+    <dialog id="upload-dialog">
+      <form id="upload-form" class="card">
+        <h2>上传插件</h2>
+        <p class="muted">选择插件包（<code>.zip</code>，≤10MB）提交到待审核队列。仅登录管理员可上传。</p>
+        <label>
+          <span>插件包</span>
+          <input type="file" id="upload-file" accept=".zip" required>
+        </label>
+        <label>
+          <span>上传者署名（可选）</span>
+          <input type="text" id="upload-uploader" placeholder="如：后台运营" maxlength="64">
+        </label>
+        <p id="upload-status" class="muted" hidden></p>
+        <div class="dialog-actions">
+          <button type="button" id="upload-cancel" class="btn btn-ghost">取消</button>
+          <button type="submit" id="upload-submit" class="btn">提交上传</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- 下架确认弹窗 -->
+    <dialog id="unpublish-dialog">
+      <form method="dialog" id="unpublish-form" class="card">
+        <h2>下架插件</h2>
+        <p id="unpublish-target" class="muted"></p>
+        <p class="muted">将从商店索引移除该插件并删除安装包，用户将无法再搜索/安装。此操作会记入审计日志。</p>
+        <div class="dialog-actions">
+          <button type="button" id="unpublish-cancel" class="btn btn-ghost">取消</button>
+          <button type="submit" id="unpublish-confirm" class="btn btn-danger">确认下架</button>
+        </div>
+      </form>
+    </dialog>
+
+    <!-- 更新包对比弹窗 -->
+    <dialog id="diff-dialog">
+      <div class="card diff-card">
+        <h2>更新包对比</h2>
+        <p id="diff-target" class="muted"></p>
+        <div id="diff-body" class="diff-body"></div>
+        <div class="dialog-actions">
+          <button type="button" id="diff-cancel" class="btn btn-ghost">关闭</button>
+        </div>
+      </div>
+    </dialog>
+
+    <!-- 批量拒绝原因弹窗 -->
+    <dialog id="batch-dialog">
+      <form method="dialog" id="batch-form" class="card">
+        <h2>批量拒绝</h2>
+        <p id="batch-target" class="muted"></p>
+        <label>
+          <span>拒绝原因（必填，将写入各插件 rejected/&lt;id&gt;.txt）</span>
+          <textarea id="batch-reason" rows="4" placeholder="例如：包含未声明的可执行文件"></textarea>
+        </label>
+        <div class="dialog-actions">
+          <button type="button" id="batch-cancel" class="btn btn-ghost">取消</button>
+          <button type="submit" id="batch-confirm" class="btn btn-danger">确认拒绝</button>
+        </div>
+      </form>
+    </dialog>
 
     <!-- 拒绝原因弹窗 -->
     <dialog id="reject-dialog">
