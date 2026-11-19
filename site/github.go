@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -88,6 +89,16 @@ func (s *Store) publishToStore(r *http.Request, entry *QueueEntry) error {
 	}
 
 	// 1) 上传 zip 到 packages/<id>_<version>.zip
+	// 关键：APP 端会用 index 的 repository 与包内 plugin.json 的 repository 做精确字符串比对，
+	// 不一致会报"源码仓库与商店登记不一致"并取消安装。因此这里在上传前把包内 plugin.json 的
+	// repository 统一改写为商店仓库，保证与 updateIndex 写入 index 的值完全一致，
+	// 用户无需关心 plugin.json 里填什么仓库，发布后自动对齐。
+	rewritten, err := rewriteZipManifestRepository(zipBytes, p.storeRepositoryURL())
+	if err != nil {
+		return fmt.Errorf("改写包内 repository 失败: %w", err)
+	}
+	zipBytes = rewritten
+
 	pkgRemote := fmt.Sprintf("packages/%s_%s.zip", entry.ID, entry.Version)
 	commitMsg := fmt.Sprintf("发布插件 %s v%s", entry.ID, entry.Version)
 	if err := p.putFile(ctx, pkgRemote, zipBytes, commitMsg); err != nil {
@@ -119,13 +130,23 @@ func (p *publisher) updateIndex(ctx context.Context, branch string, entry *Queue
 		idx.SchemaVersion = 1
 	}
 
+	// 中文名称优先：default 为英文且包内已有中文时，用中文替换 default，
+	// 这样 APP 端即使只读 default 也能显示中文（中文本来就在 plugin.json 里）。
+	m.Name.applyChineseDefault()
+	m.Description.applyChineseDefault()
+
+	// repository 必须写商店仓库：APP 端既用它解析包下载地址（packages/），又用它和包内
+	// plugin.json 的 repository 做精确比对。统一取 storeRepositoryURL()，与发布时改写进
+	// 包内的值保持完全一致，避免"源码仓库不一致"或"找不到可安装版本"。
+	repository := p.storeRepositoryURL()
+
 	// 构造新条目
 	newEntry := indexEntry{
 		ID:     m.ID,
 		Name:   m.Name,
 		Description: m.Description,
 		Author: authorOf(m),
-		Repository: fmt.Sprintf("https://github.com/%s/%s", p.cfg.GHOwner, p.cfg.GHRepo),
+		Repository: repository,
 		Version:    m.Version,
 		License:    m.License,
 		Tags:       m.inferTags(),
@@ -396,4 +417,61 @@ func (p *publisher) deleteFile(ctx context.Context, remotePath string) error {
 		return fmt.Errorf("GitHub DELETE %s 返回 %d: %s", remotePath, resp.StatusCode, string(b))
 	}
 	return nil
+}
+
+// storeRepositoryURL 返回本商店仓库的规范 URL（用于写入 index 的 repository 字段，
+// 以及发布时改写进插件包内的 plugin.json repository，保证两处值与大小写完全一致）。
+func (p *publisher) storeRepositoryURL() string {
+	return fmt.Sprintf("https://github.com/%s/%s", p.cfg.GHOwner, p.cfg.GHRepo)
+}
+
+// rewriteZipManifestRepository 把插件包 zip 内 plugin.json 的 repository 字段改写为 storeRepoURL，
+// 其余文件字节原样保留。返回新的 zip 字节。用于发布时统一对齐商店仓库，避免 APP 端
+// "源码仓库与商店登记不一致"校验失败。
+func rewriteZipManifestRepository(zipBytes []byte, storeRepoURL string) ([]byte, error) {
+	src, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("读取插件包失败: %w", err)
+	}
+
+	var buf bytes.Buffer
+	dst := zip.NewWriter(&buf)
+
+	for _, f := range src.File {
+		rc, err := f.Open()
+		if err != nil {
+			return nil, fmt.Errorf("读取包内文件 %s 失败: %w", f.Name, err)
+		}
+		data, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, fmt.Errorf("读取包内文件 %s 失败: %w", f.Name, err)
+		}
+
+		// 仅改写 plugin.json（根目录）的 repository 字段
+		if f.Name == "plugin.json" || f.Name == "/plugin.json" {
+			var m map[string]interface{}
+			if err := json.Unmarshal(data, &m); err != nil {
+				return nil, fmt.Errorf("解析包内 plugin.json 失败: %w", err)
+			}
+			m["repository"] = storeRepoURL
+			data, err = json.MarshalIndent(m, "", "  ")
+			if err != nil {
+				return nil, fmt.Errorf("序列化 plugin.json 失败: %w", err)
+			}
+		}
+
+		w, err := dst.Create(f.Name)
+		if err != nil {
+			return nil, fmt.Errorf("写入新包 %s 失败: %w", f.Name, err)
+		}
+		if _, err := w.Write(data); err != nil {
+			return nil, fmt.Errorf("写入新包 %s 失败: %w", f.Name, err)
+		}
+	}
+
+	if err := dst.Close(); err != nil {
+		return nil, fmt.Errorf("关闭新包失败: %w", err)
+	}
+	return buf.Bytes(), nil
 }
