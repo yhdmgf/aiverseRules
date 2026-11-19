@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"archive/zip"
 	"bytes"
 	"crypto/sha256"
@@ -22,9 +23,17 @@ const (
 	maxUploadSize   = 10 << 20 // 整包上限 10MB
 	maxFileInZip    = 2 << 20  // 包内单文件上限 2MB
 	uploadFormField = "file"
+
+	// anonymousUploader 是 uploader 缺失时的兜底署名（隐秘英文默认名），
+	// 与审核后台前端未填署名时显示的 anonymous 保持一致。
+	anonymousUploader = "anonymous"
 )
 
 // handleUpload 接收插件 zip 包，校验后存入暂存目录并写入待审核元数据。
+//
+// 命名策略（自动整理）：上传文件名不再要求特定格式，后台一律以包内 plugin.json 为唯一权威
+// 取 id / version / author，落地时自动按 {id}_{version}.zip 重新命名归档。
+// 这样任何文件名（如 dafeiyu-pet_2.5.2.zip）都不会再触发“文件名格式不合法 / 与 plugin.json 不一致”等报错。
 func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeErr(w, http.StatusMethodNotAllowed, "仅支持 POST")
@@ -41,7 +50,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	if !isAdmin {
 		// 带正确上传令牌的可信开发者：视为可信（跳过保留字等校验，只大小/格式限制）。
-		// 无令牌或令牌错误：不拒绡，作为普通用户上传，走完整 API 校验（保留字、zip、文件名格式）。
+		// 无令牌或令牌错误：不拒绝，作为普通用户上传，走完整 API 校验（保留字、zip、内容安全）。
 		// 令牌仅用于区分信任级别，不是上传的硬门槛。
 		tok := r.Header.Get("X-Upload-Token")
 		if s.cfg.UploadToken != "" && safeEqual(tok, s.cfg.UploadToken) {
@@ -62,12 +71,8 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 必填的上传者标识（表单字段 uploader），用于插件所有者校验
-	uploader := strings.TrimSpace(r.FormValue("uploader"))
-	if uploader == "" {
-		writeErr(w, http.StatusBadRequest, "缺少上传者标识（uploader 字段必填）")
-		return
-	}
+	// 上传者标识（表单字段 uploader）：可选。缺失时按“表单 → plugin.json 的 author → anonymous”兜底。
+	formUploader := strings.TrimSpace(r.FormValue("uploader"))
 
 	file, header, err := r.FormFile(uploadFormField)
 	if err != nil {
@@ -76,7 +81,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	// 1) 上传文件扩展名必须是 .zip
+	// 1) 上传文件扩展名必须是 .zip（仅此一项文件名硬要求，其余命名后台自动整理）
 	if !strings.EqualFold(filepath.Ext(header.Filename), ".zip") {
 		s.uploadRL.Fail(ip)
 		writeErr(w, http.StatusBadRequest, "只接受 .zip 插件包")
@@ -100,7 +105,7 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3) 解析 zip 并做安全校验（Zip Slip / 黑名单扩展 / 单文件大小）
+	// 3) 解析 zip 并做安全校验（Zip Slip / 黑名单扩展 / 单文件大小），同时取出 plugin.json
 	manifest, err := validateZip(data, isAdmin)
 	if err != nil {
 		s.uploadRL.Fail(ip)
@@ -108,77 +113,98 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 3.5) 文件名强制格式：必须形如 {id}_{version}.zip，且与包内 plugin.json 一致
-	fileID, fileVersion, perr := parsePkgFilename(header.Filename)
-	if perr != nil {
-		s.uploadRL.Fail(ip)
-		writeErr(w, http.StatusBadRequest, "文件名必须形如 {插件id}_{版本号}.zip（例如 aiverse.desktop-pet_1.0.0.zip）："+perr.Error())
-		return
+	// 3.1) 后台自动整理：以 plugin.json 为权威决定归档 id / version / author，
+	// 不再校验上传文件名，任何文件名都能上传。
+	pluginID := manifest.ID
+	pluginVersion := manifest.Version
+
+	// 3.2) 上传者署名：显式（表单）优先；否则兜底 plugin.json 的 author，再兜底 anonymous。
+	// 仅当用户显式署名时才做所有者/作者一致性校验，未署名不拦截，保证“没填也能上传”。
+	explicitUploader := formUploader
+	uploader := explicitUploader
+	if uploader == "" {
+		if a := strings.TrimSpace(manifest.Author); a != "" {
+			uploader = a
+		}
 	}
-	if fileID != manifest.ID {
-		s.uploadRL.Fail(ip)
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("文件名中的插件 id（%s）与包内 plugin.json 的 id（%s）不一致", fileID, manifest.ID))
-		return
-	}
-	if fileVersion != manifest.Version {
-		s.uploadRL.Fail(ip)
-		writeErr(w, http.StatusBadRequest, fmt.Sprintf("文件名中的版本号（%s）与包内 plugin.json 的 version（%s）不一致", fileVersion, manifest.Version))
-		return
+	if uploader == "" {
+		uploader = anonymousUploader
 	}
 
-	// 3.55) 所有者校验：插件已登记所有者时，非管理员的 uploader 必须匹配
-	if !isAdmin {
-		if err := s.checkPluginOwner(manifest.ID, uploader); err != nil {
+	// 3.55) 所有者校验：仅当用户显式署名时才校验，避免匿名兜底误伤正常上传。
+	// 插件已登记所有者时，非管理员的署名必须匹配。
+	if !isAdmin && explicitUploader != "" {
+		if err := s.checkPluginOwner(pluginID, explicitUploader); err != nil {
 			s.uploadRL.Fail(ip)
 			writeErr(w, http.StatusForbidden, err.Error())
 			return
 		}
 	}
 
-	// 3.56) 作者名一致性校验：plugin.json 里的 author 必须和表单字段 uploader 一致
-	// 管理员豁免此校验（可以上传任何插件）
-	if !isAdmin {
+	// 3.56) 作者名一致性校验：plugin.json 里的 author 必须和显式上传者署名一致。
+	// 仅在用户显式署名时校验；未署名（兜底）时跳过，保证“没填也能上传”。
+	// 管理员豁免此校验（可以上传任何插件）。
+	if !isAdmin && explicitUploader != "" {
 		manifestAuthor := strings.TrimSpace(manifest.Author)
 		if manifestAuthor == "" {
 			s.uploadRL.Fail(ip)
 			writeErr(w, http.StatusBadRequest, "plugin.json 缺少 author 字段，请填写作者名")
 			return
 		}
-		if manifestAuthor != uploader {
+		if manifestAuthor != explicitUploader {
 			s.uploadRL.Fail(ip)
-			writeErr(w, http.StatusBadRequest, fmt.Sprintf("plugin.json 里的 author（%s）与上传时填写的作者名（%s）不一致，请输入正确的作者", manifestAuthor, uploader))
+			writeErr(w, http.StatusBadRequest, fmt.Sprintf("plugin.json 里的 author（%s）与上传时填写的作者名（%s）不一致，请输入正确的作者", manifestAuthor, explicitUploader))
 			return
 		}
 	}
 
-	// 3.6) 同 id + 同版本已发布则拒绝重复上传；不同版本则视为“更新”
-	previous, _ := s.getEntry(manifest.ID)
-	isUpdate := previous != nil && previous.Version != manifest.Version
-	if previous != nil && previous.Status == StatusApproved && previous.Version == manifest.Version {
-		s.uploadRL.Fail(ip)
-		writeErr(w, http.StatusConflict, fmt.Sprintf("插件 %s v%s 已发布，请更新版本号后再上传", manifest.ID, manifest.Version))
-		return
+	// 3.6) 同 id + 同版本是否“已发布”以远程 index.json 为准，而非本地队列状态。
+	// 下架（unpublish）只删远程 index 条目 + packages 包，不回退本地队列的 approved 标记，
+	// 若据此判定会误拦“下架后重新上传同版本”。故此处直接查远程；远程不可用（未配置 GitHub /
+	// 网络/限流失败）时才回退到本地队列状态，保证无 GitHub 环境仍可用。
+	publishedRemotely, remoteErr := s.versionPublishedRemotely(r.Context(), pluginID, pluginVersion)
+	if remoteErr == nil {
+		// 远程权威：同 id + 同版本仍在远程 index 里才算重复。
+		if publishedRemotely {
+			s.uploadRL.Fail(ip)
+			writeErr(w, http.StatusConflict, fmt.Sprintf("插件 %s v%s 已发布，请更新版本号后再上传", pluginID, pluginVersion))
+			return
+		}
+	} else {
+		// 远程不可用，回退本地队列（仅作降级，不作为权威）。
+		if prev, _ := s.getEntry(pluginID); prev != nil && prev.Status == StatusApproved && prev.Version == pluginVersion {
+			s.uploadRL.Fail(ip)
+			writeErr(w, http.StatusConflict, fmt.Sprintf("插件 %s v%s 已发布，请更新版本号后再上传", pluginID, pluginVersion))
+			return
+		}
 	}
+
+	// 是否为“更新”（同 id 不同版本），仅用于下游区分新增/更新，不再作为重复依据
+	isUpdate := false
+	if prev, _ := s.getEntry(pluginID); prev != nil {
+		isUpdate = prev.Version != pluginVersion
+	}
+	_ = isUpdate
 
 	// dry-run 预检模式：只做上述全部校验，不落盘、不写元数据，供上传端预先检查
 	if r.URL.Query().Get("dryrun") == "1" {
 		s.uploadRL.Success(ip)
-		s.writeAudit(auditEvent{Event: auditEventUploadDryRun, User: uploader, IP: ip, Target: manifest.ID, Result: "ok", Detail: "version=" + manifest.Version})
+		s.writeAudit(auditEvent{Event: auditEventUploadDryRun, User: uploader, IP: ip, Target: pluginID, Result: "ok", Detail: "version=" + pluginVersion})
 		writeJSON(w, http.StatusOK, map[string]any{
-			"ok":         true,
-			"dryrun":     true,
-			"id":         manifest.ID,
-			"version":    manifest.Version,
-			"is_update":  isUpdate,
-			"message":    "预检通过，包结构与文件名均合法" + updateSuffix(isUpdate),
+			"ok":        true,
+			"dryrun":    true,
+			"id":        pluginID,
+			"version":   pluginVersion,
+			"is_update": isUpdate,
+			"message":   "预检通过，包结构合法" + updateSuffix(isUpdate),
 		})
 		return
 	}
 
-	// 4) 计算包哈希并落地到暂存目录（文件名由 id+version 决定，防穿越）
+	// 4) 计算包哈希并落地到暂存目录（文件名由 plugin.json 的 id+version 决定，防穿越 + 自动整理）
 	sum := sha256.Sum256(data)
 	shaHex := hex.EncodeToString(sum[:])
-	zipName := fmt.Sprintf("%s_%s.zip", manifest.ID, manifest.Version)
+	zipName := fmt.Sprintf("%s_%s.zip", pluginID, pluginVersion)
 	destPath, ok := safeJoin(s.inbox, zipName)
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "插件 id/version 生成的不安全路径")
@@ -193,13 +219,13 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	// 5) 写待审核元数据
 	relPath, _ := filepath.Rel(s.cfg.DataDir, destPath)
 	entry := &QueueEntry{
-		ID:           manifest.ID,
+		ID:           pluginID,
 		Name:         manifest.Name.Default,
-		Version:      manifest.Version,
+		Version:      pluginVersion,
 		Uploader:     uploader,
 		UploadedAt:   time.Now(),
 		PackagePath:  filepath.ToSlash(relPath),
-		OrigFilename: header.Filename,
+		OrigFilename: header.Filename, // 保留用户原始文件名仅供审核参考，归档名已自动整理
 		SHA256:       shaHex,
 		Status:       StatusPending,
 		Size:         int64(len(data)),
@@ -212,26 +238,26 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.uploadRL.Success(ip)
-	log.Printf("[信息] 收到插件包 %s v%s（来自 %s，%d 字节）", manifest.ID, manifest.Version, ip, len(data))
-	s.writeAudit(auditEvent{Event: auditEventUpload, User: uploader, IP: ip, Target: manifest.ID, Result: "ok", Detail: "version=" + manifest.Version})
+	log.Printf("[信息] 收到插件包 %s v%s（来自 %s，上传者 %s，原文件名 %s，%d 字节）", pluginID, pluginVersion, ip, uploader, header.Filename, len(data))
+	s.writeAudit(auditEvent{Event: auditEventUpload, User: uploader, IP: ip, Target: pluginID, Result: "ok", Detail: "version=" + pluginVersion})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":         true,
-		"id":         manifest.ID,
-		"version":    manifest.Version,
-		"is_update":  isUpdate,
-		"message":    "上传成功，已进入待审核队列" + updateSuffix(isUpdate),
+		"ok":        true,
+		"id":        pluginID,
+		"version":   pluginVersion,
+		"is_update": isUpdate,
+		"message":   "上传成功，已进入待审核队列" + updateSuffix(isUpdate),
 	})
 }
 
 // checkPluginOwner 校验插件所有者：若该插件已登记上传者（待审核队列）且与本次 uploader 不一致，
 // 则拒绝上传（防冒名更新他人插件）。管理员调用已在调用方拦截，这里只做匹配比较。
-// 注意：错误信息不回显具体作者名（隐私保护）。
+// 注意：错误信息不回显具体作者名（隐私保护）。anonymous 兜底署名不参与所有者判定。
 func (s *Store) checkPluginOwner(pluginID, uploader string) error {
 	prev, err := s.getEntry(pluginID)
 	if err != nil || prev == nil {
 		return nil // 队列无记录（含未登记上传者）则放行
 	}
-	if prev.Uploader != "" && prev.Uploader != uploader {
+	if prev.Uploader != "" && prev.Uploader != uploader && prev.Uploader != anonymousUploader {
 		return fmt.Errorf("该插件属于其他作者，你不能更新（当前所有者已登记）")
 	}
 	return nil
@@ -243,68 +269,6 @@ func updateSuffix(isUpdate bool) string {
 		return "（检测为已有插件的新版本更新）"
 	}
 	return ""
-}
-
-// parsePkgFilename 解析上传包文件名，要求形如 {id}_{version}.zip。
-// 返回 id、version 与错误。id 允许字母/数字/-/_ 与一个“.”分隔的发布者段；
-// version 必须为三段数字（如 1.0.0），每段 1-3 位、禁前导零。
-// 注意：以最后一个“_”分割，因为 id 本身可能含“-”但不含“_”，version 不含“_”。
-func parsePkgFilename(name string) (id, version string, err error) {
-	base := filepath.Base(name)
-	if !strings.EqualFold(filepath.Ext(base), ".zip") {
-		return "", "", fmt.Errorf("扩展名必须是 .zip")
-	}
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	i := strings.LastIndex(stem, "_")
-	if i <= 0 || i == len(stem)-1 {
-		return "", "", fmt.Errorf("缺少 _<版本号> 部分")
-	}
-	id = stem[:i]
-	version = stem[i+1:]
-	if !isValidPkgID(id) {
-		return "", "", fmt.Errorf("插件 id 格式不合法: %q", id)
-	}
-	if !isValidPkgVersion(version) {
-		return "", "", fmt.Errorf("版本号格式不合法: %q（应为三段数字如 1.0.0）", version)
-	}
-	return id, version, nil
-}
-
-// isValidPkgID 校验插件 id：形如 发布者.插件名，字符限字母/数字/-/_。
-func isValidPkgID(id string) bool {
-	if strings.Count(id, ".") != 1 {
-		return false
-	}
-	for _, c := range id {
-		ok := (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-			(c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.'
-		if !ok {
-			return false
-		}
-	}
-	return len(id) > 0
-}
-
-// isValidPkgVersion 校验版本号：三段数字，每段 1-3 位，禁前导零（除单独的 "0"）。
-func isValidPkgVersion(v string) bool {
-	parts := strings.Split(v, ".")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, p := range parts {
-		if len(p) < 1 || len(p) > 3 {
-			return false
-		}
-		for _, c := range p {
-			if c < '0' || c > '9' {
-				return false
-			}
-		}
-		if len(p) > 1 && p[0] == '0' {
-			return false
-		}
-	}
-	return true
 }
 
 // validateZip 校验 zip 包内容安全，并从根 plugin.json 解析出 Manifest。
@@ -553,4 +517,23 @@ func cloneZipFileHeader(h zip.FileHeader) zip.FileHeader {
 	out.Comment = h.Comment
 	out.NonUTF8 = h.NonUTF8
 	return out
+}
+
+// versionPublishedRemotely 查询远程 index.json，判断插件 id 的指定 version 是否仍在已发布列表中。
+// 这是“是否已发布/是否重复”的权威依据。返回 (是否已发布, 错误)；GitHub 未配置或查询失败时返回错误，
+// 由调用方决定是否降级到本地队列。
+func (s *Store) versionPublishedRemotely(ctx context.Context, id, version string) (bool, error) {
+	if s.publisher == nil || !s.ghEnabled {
+		return false, fmt.Errorf("GitHub 未配置")
+	}
+	idx, err := s.publisher.fetchIndex(ctx, s.cfg.GHBranch)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range idx.Plugins {
+		if e.ID == id && (version == "" || e.Version == version) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
