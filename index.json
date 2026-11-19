@@ -1,26 +1,4 @@
 {
   "schema_version": 1,
-  "plugins": [
-    {
-      "id": "jinghan.dafeiyu-pet",
-      "name": {
-        "default": "Dafeiyu Pet",
-        "zh-CN": "大肥鱼桌宠"
-      },
-      "description": {
-        "default": "Three-view transparent desktop pet: click to interact, drag to move, bubble auto-fits. Sprites from 1190fasheqi/dafeiyu-pet (MIT). Muse port by 惊寒.",
-        "zh-CN": "三视图透明桌宠：单击互动、拖拽移动、气泡随内容自适应。形象与台词来自 1190fasheqi/dafeiyu-pet（MIT）。muse 适配：惊寒。"
-      },
-      "author": "jinghan",
-      "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "2.5.2",
-      "license": "MIT",
-      "tags": [
-        "ui",
-        "tool",
-        "other"
-      ],
-      "lastUpdate": 1795094051561
-    }
-  ]
+  "plugins": []
 }
