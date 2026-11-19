@@ -22,7 +22,7 @@ plugin-store-backend/
 ├── security.go             # 安全头、限流器、session、bcrypt、clientIP、路径安全、原子写
 ├── ratelimit.go            # 账号维度登录失败锁定（data/accountban.json）+ 带时间窗的限流器扩展
 ├── totp.go                 # TOTP 动态码（RFC 6238，纯标准库：生成/校验/otpauth URI）
-├── captcha.go              # 算术人机验证（本地自实现，challenge + 一次性 token）
+├── captcha.go              # 滑动人机验证（本地自实现，challenge + 一次性 token）
 ├── manifest.go             # plugin.json 解析/校验、tags 推断、扩展名黑名单
 ├── upload.go               # POST /api/upload：zip 安全校验（Zip Slip / 黑名单 / 大小）
 ├── admin.go                # 登录/登出/队列/通过/拒绝 handler + session 中间件
@@ -125,7 +125,7 @@ go run /tmp/genhash.go '你的强密码'
 2. 用认证器 App（Google Authenticator / 1Password 等）添加条目，手动输入密钥或扫 `otpauth://totp/...` 二维码（`OTPAuthURI` 可生成对应 URI；算法 SHA1、6 位、步长 60s）。
 3. 重启后登录除用户名/密码外还须填当前 6 位动态码（服务端允许 ±1 个时间窗容错）。
 
-> ⚠️ 未配置 `STORE_ADMIN_TOTP_SECRET` 时 TOTP 校验被跳过，登录仅靠密码 + 算术验证；配置后立即强制校验。换密钥会让旧条目失效。
+> ⚠️ 未配置 `STORE_ADMIN_TOTP_SECRET` 时 TOTP 校验被跳过，登录仅靠密码 + 滑块；配置后立即强制校验。换密钥会让旧条目失效。
 
 ### secrets 文件（systemd）
 
@@ -225,8 +225,8 @@ server {
 
 | 方法 | 路径 | 鉴权 | 说明 |
 |------|------|------|------|
-| GET | `/api/captcha/challenge` | 无 | 下发一次算术题挑战。返回 `{"ok":true,"id":"...","question":"7+5","totp_required":true}`。 |
-| POST | `/api/captcha/verify` | 无 | 校验算术题答案。body `{"id":"...","answer":"12"}`；通过返回 `{"ok":true,"token":"..."}`（一次性，60s），失败 `{"ok":false}`。 |
+| GET | `/api/captcha/challenge` | 无 | 下发一次滑块拼图挑战。返回 `{"ok":true,"id":"...","bg":<0~1>}`。 |
+| POST | `/api/captcha/verify` | 无 | 校验滑块落点。body `{"id":"...","x":<0~1>}`；通过返回 `{"ok":true,"token":"..."}`（一次性，60s），失败 `{"ok":false}`。 |
 | POST | `/api/upload` | 无（限流） | 上传插件 zip（multipart 字段名 `file`，可选 `uploader`）。 |
 | POST | `/api/login` | 无（限流） | 登录。body `{"username","password","totp","captcha_token"}`；成功 `{"ok":true,"user":"..."}` 并发 session cookie；被锁定时 `429` + `{"ok":false,"error":"...","locked":true,"locked_until":"<RFC3339>"}`。 |
 | POST | `/api/logout` | ✅ | 退出登录。 |
@@ -239,9 +239,9 @@ server {
 
 登录前先做人机校验，登录时依次校验动态码与凭据，并按 **IP + 账号** 双维度限流：
 
-1. **算术人机验证**（本地自实现，不依赖第三方/Cloudflare）
-   - 前端先 `GET /api/captcha/challenge` 拿到 `id` 与算术题 `question`（如 `7+5`），用户填答案后 `POST /api/captcha/verify` 提交 `answer`。
-   - 答案正确（常量时间比较）才通过，签发**一次性 token（60s 有效）**；挑战与 token 均存内存、带过期、用后即删（防重放）。
+1. **滑动人机验证**（本地自实现，不依赖第三方/Cloudflare）
+   - 前端先 `GET /api/captcha/challenge` 拿到 `id` 与滑块起始位 `bg`，拖动拼图块后 `POST /api/captcha/verify` 提交落点 `x`。
+   - 落点与真实目标位误差 ≤ ±0.03 才通过，签发**一次性 token（60s 有效）**；挑战与 token 均存内存、带过期、用后即删（防重放）。
 2. **TOTP 动态码**（RFC 6238，纯标准库 `crypto/hmac`+`sha1`+`base32`，零第三方）
    - 配置了 `STORE_ADMIN_TOTP_SECRET` 后强制校验 6 位动态码，允许 ±1 个时间窗容错防时钟漂移；常量时间比较防侧信道。
 3. **失败锁定（IP + 账号 双维度）**
@@ -302,7 +302,7 @@ server {
 - [x] 上传：扩展名黑名单 + Zip Slip 防护 + 单文件/整包大小限制 + 校验失败不落地。
 - [x] 登录限流（IP 维度）：1 分钟内同 IP 失败 3 次锁 30 分钟（`data/ipban.json`）。
 - [x] 登录限流（账号维度）：1 分钟内同账号失败 3 次锁 30 分钟（`data/accountban.json`）；输对密码+TOTP 两维度同时清零。
-- [x] 算术人机验证：本地自实现 challenge/verify，一次性 token 60s，防重放，无第三方依赖。
+- [x] 滑动人机验证：本地自实现 challenge/verify，一次性 token 60s，防重放，无第三方依赖。
 - [x] TOTP 动态码：RFC 6238 纯标准库，±1 窗容错，常量时间比较；未配置密钥时降级跳过并告警。
 - [x] clientIP 默认以 `RemoteAddr` 为准，防伪造 XFF 绕过 IP 锁（需显式 `STORE_TRUST_PROXY=1` 才信 XFF）。
 - [x] 上传限流：同 IP 5 分钟最多 10 次。
