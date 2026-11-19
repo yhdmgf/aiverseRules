@@ -1,5 +1,123 @@
 {
   "schema_version": 1,
-  "plugins": [],
-  "updatedAt": "2026-11-19T15:00:35Z"
+  "plugins": [
+    {
+      "id": "aiverse.dev-tools",
+      "name": {
+        "default": "Dev Tools",
+        "zh-CN": "开发工具"
+      },
+      "description": {
+        "default": "Build and clean the current Flutter or Android project.",
+        "zh-CN": "为当前 Flutter / Android 项目提供构建与清理工具。"
+      },
+      "author": "aiverse",
+      "license": "MIT",
+      "version": "1.1.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.dev-tools_1.1.1.zip",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "logo": "https://raw.githubusercontent.com/xzyy03/Muse-Plugins-Store/main/icons/community.dev-tools.png"
+    },
+    {
+      "id": "aiverse.background-approval",
+      "name": {
+        "default": "Background Approval",
+        "zh-CN": "后台审批"
+      },
+      "description": {
+        "default": "Shows a floating ball while AiCode is in the background and expands it into an approval panel when the AI needs permission. Foreground requests are passed straight back to the in-app dialog.",
+        "zh-CN": "AiCode 在后台时显示悬浮球；AI 需要授权时展开审批面板。App 在前台时直接交回应用内确认框，不阻塞审批。"
+      },
+      "author": "aiverse",
+      "license": "MIT",
+      "version": "1.1.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.background-approval_1.1.1.zip",
+      "repository": "https://github.com/yhdmgf/aiverserules"
+    },
+    {
+      "id": "aiverse.gateway",
+      "name": {
+        "default": "Raccoon Gateway",
+        "zh-CN": "小浣熊网关"
+      },
+      "description": {
+        "default": "Runs a local OpenAI-compatible gateway for SenseNova Raccoon Work in the container, with a pooled account pool, automatic token refresh, daily check-in, and QR-code / SMS login.",
+        "zh-CN": "在容器内运行商汤小浣熊（Raccoon Work）的本地 OpenAI 兼容网关，支持账号池轮换、令牌自动续期、每日自动签到，以及扫码与短信登录。"
+      },
+      "author": "aiverse",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "license": "MIT",
+      "version": "1.0.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.gateway_1.0.1.zip"
+    },
+    {
+      "id": "aiverse.armor-deepseek",
+      "name": {
+        "zh-CN": "破甲控制台 · DeepSeek v2.4",
+        "default": "Armor Console (DeepSeek v2.4)"
+      },
+      "description": {
+        "zh-CN": "破甲提示词一键部署进 prompts.custom：完整版/精简版、全局/项目级、自动备份与一键回滚。纯页面实现，不依赖插件进程。",
+        "default": "Deploy the armor prompt into prompts.custom: full/lite, global/project, auto backup and rollback. Pure page implementation."
+      },
+      "author": "aiverse",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "license": "MIT",
+      "version": "1.1.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.armor-deepseek_1.1.1.zip",
+      "icon": "shield"
+    },
+    {
+      "id": "aiverse.wb-gateway",
+      "name": {
+        "default": "WorkBuddy Gateway",
+        "zh-CN": "WorkBuddy 网关"
+      },
+      "description": {
+        "default": "Self-contained WorkBuddy gateway: manages accounts, talks to upstream directly, exposes OpenAI-compatible /v1 endpoints.",
+        "zh-CN": "独立运行的 WorkBuddy 网关：插件内管理账号、直连上游，对外提供 OpenAI 兼容 /v1 接口。"
+      },
+      "author": "aiverse",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "license": "MIT",
+      "version": "1.5.2",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.wb-gateway_1.5.2.zip",
+      "icon": "zap"
+    },
+    {
+      "id": "aiverse.dafeiyu-pet",
+      "name": {
+        "default": "Dafeiyu Pet",
+        "zh-CN": "大肥鱼桌宠"
+      },
+      "description": {
+        "default": "Three-view transparent desktop pet: click to interact, drag to move, bubble auto-fits. Sprites from 1190fasheqi/dafeiyu-pet (MIT). Muse port by 惊寒.",
+        "zh-CN": "三视图透明桌宠：单击互动、拖拽移动、气泡随内容自适应。形象与台词来自 1190fasheqi/dafeiyu-pet（MIT）。muse 适配：惊寒。"
+      },
+      "author": "aiverse",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "license": "MIT",
+      "version": "2.9.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.dafeiyu-pet_2.9.1.zip",
+      "logo": "https://raw.githubusercontent.com/xzyy03/Muse-Plugins-Store/main/icons/jinghan.dafeiyu-pet.png"
+    },
+    {
+      "id": "aiverse.env-deps",
+      "name": {
+        "default": "Environment Dependencies Viewer",
+        "zh-CN": "环境依赖查看器"
+      },
+      "description": {
+        "default": "List installed runtime tools and dependencies in the current environment, grouped with versions. By 惊寒.",
+        "zh-CN": "探测并显示当前执行环境里已安装的运行时与依赖，按类别分组并带版本号。作者：惊寒。"
+      },
+      "author": "aiverse",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "license": "MIT",
+      "version": "1.1.0",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.env-deps_1.1.0.zip",
+      "icon": "layers"
+    }
+  ],
+  "updatedAt": "2026-11-19T00:00:00Z"
 }
