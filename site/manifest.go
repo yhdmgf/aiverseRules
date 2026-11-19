@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Manifest 对应插件包根目录的 plugin.json。
@@ -18,6 +19,7 @@ type Manifest struct {
 	Version         string               `json:"version"`
 	Author          string               `json:"author"`
 	License         string               `json:"license"`
+	Repository      string               `json:"repository"`
 	Tags            []string             `json:"tags,omitempty"`
 	Contributes     ManifestContributes  `json:"contributes"`
 }
@@ -50,6 +52,57 @@ func (l LocalizedText) MarshalJSON() ([]byte, error) {
 	}
 	out["default"] = l.Default
 	return json.Marshal(out)
+}
+
+// applyChineseDefault 把 LocalizedText 的 default 规范化为中文优先：
+// 若 default 是英文（拉丁字母为主）且存在中文子键（zh-CN/zh 等），则用中文替换 default，
+// 原英文保留到 en 子键。这样 APP 端即使只读 default 也能显示中文，而中文本来就已经在包里。
+func (l *LocalizedText) applyChineseDefault() {
+	if l == nil || l.Default == "" {
+		return
+	}
+	if !isMostlyLatin(l.Default) {
+		return // default 已是中文等非拉丁文本，无需替换
+	}
+	zh, ok := l.chineseValue()
+	if !ok || zh == "" {
+		return
+	}
+	en := l.Default
+	l.Default = zh
+	if l.Extra == nil {
+		l.Extra = map[string]string{}
+	}
+	if _, exists := l.Extra["en"]; !exists {
+		l.Extra["en"] = en
+	}
+}
+
+// chineseValue 从 Extra 里找中文子键的值（兼容 zh-CN/zh_CN/zh-Hans/zh-Hant/zh）。
+func (l *LocalizedText) chineseValue() (string, bool) {
+	for _, k := range []string{"zh-CN", "zh_CN", "zh-Hans", "zh-Hant", "zh-TW", "zh"} {
+		if v, ok := l.Extra[k]; ok && v != "" {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+// isMostlyLatin 判断字符串是否以拉丁字母为主（即英文），用于决定是否用中文替换 default。
+func isMostlyLatin(s string) bool {
+	var latin, total int
+	for _, r := range s {
+		if unicode.IsLetter(r) {
+			total++
+			if r < 128 {
+				latin++
+			}
+		}
+	}
+	if total == 0 {
+		return false
+	}
+	return latin*100/total >= 80 // 字母里 80% 以上是 ASCII 视为英文
 }
 
 // ManifestContributes 声明插件贡献的能力，用于校验非空 + 推断 tags。
