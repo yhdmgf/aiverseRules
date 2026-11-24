@@ -1,9 +1,9 @@
 package main
 
 import (
-	"context"
 	"archive/zip"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -240,6 +240,8 @@ func (s *Store) handleUpload(w http.ResponseWriter, r *http.Request) {
 	s.uploadRL.Success(ip)
 	log.Printf("[信息] 收到插件包 %s v%s（来自 %s，上传者 %s，原文件名 %s，%d 字节）", pluginID, pluginVersion, ip, uploader, header.Filename, len(data))
 	s.writeAudit(auditEvent{Event: auditEventUpload, User: uploader, IP: ip, Target: pluginID, Result: "ok", Detail: "version=" + pluginVersion})
+	// 上传成功进入待审核队列后，异步推送 Telegram 群提醒（失败不影响上传结果）。
+	notifyUploadAsync(pluginID, pluginVersion, uploader, ip, int64(len(data)), isUpdate)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":        true,
 		"id":        pluginID,

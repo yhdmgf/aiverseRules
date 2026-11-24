@@ -184,6 +184,12 @@ func (m Manifest) inferTags() []string {
 var (
 	// pluginIDPattern 形如「发布者.插件名」：段由字母/数字/-/_ 组成。
 	pluginIDPattern = regexp.MustCompile(`^[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+$`)
+	// authorPattern 是 APP 端 PluginIndexParser 对 index.json 里 author 的硬性要求
+	// （权威来源：app/.../plugins/data/index/PluginIndexParser.kt 的 AUTHOR = ^[a-z][a-z0-9-]*$）。
+	// author 含空格/大写/下划线等非法字符时，APP 会在加载商店索引时直接抛
+	// 「author 非法」并拒绝加载【整个】index.json，导致所有插件都无法加载。
+	// 故上传阶段就按此正则拒绝脏值，把问题挡在写入 index.json 之前。
+	authorPattern = regexp.MustCompile(`^[a-z][a-z0-9-]*$`)
 	// semverPattern 宽松 semver：MAJOR.MINOR.PATCH（可带 -prerelease）。
 	semverPattern = regexp.MustCompile(`^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$`)
 )
@@ -280,6 +286,14 @@ func validateManifest(m *Manifest, isAdmin bool) error {
 	}
 	if !pluginIDPattern.MatchString(m.ID) {
 		return fmt.Errorf("插件 id 形如「发布者.插件名」（字母/数字/-/_），当前不合法: %q", m.ID)
+	}
+	// author 合法性：APP 端只接受 ^[a-z][a-z0-9-]*$，含空格/大写/下划线等会让 APP
+	// 拒绝加载整个商店索引。author 留空时 authorOf 回退取 id 发布者段，故两处都要合法。
+	// 先 trim 首尾空白，再把结果交给 authorOf 兜底，保证校验对象与最终写进 index.json 的值一致。
+	m.Author = strings.TrimSpace(m.Author)
+	effectiveAuthor := authorOf(*m)
+	if !authorPattern.MatchString(effectiveAuthor) {
+		return fmt.Errorf("author %q 不合法：只允许小写字母开头，后接小写字母/数字/连字符，不能含空格或下划线", effectiveAuthor)
 	}
 	// 防冒充官方：保留字 aiverse 不可用作作者身份。
 	// 两条冒充路径都堵住——

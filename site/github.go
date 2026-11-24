@@ -142,15 +142,15 @@ func (p *publisher) updateIndex(ctx context.Context, branch string, entry *Queue
 
 	// 构造新条目
 	newEntry := indexEntry{
-		ID:     m.ID,
-		Name:   m.Name,
+		ID:          m.ID,
+		Name:        m.Name,
 		Description: m.Description,
-		Author: authorOf(m),
-		Repository: repository,
-		Version:    m.Version,
-		License:    m.License,
-		Tags:       m.inferTags(),
-		LastUpdate: time.Now().UnixMilli(),
+		Author:      authorOf(m),
+		Repository:  repository,
+		Version:     m.Version,
+		License:     m.License,
+		Tags:        m.inferTags(),
+		LastUpdate:  time.Now().UnixMilli(),
 	}
 	if newEntry.ID == "" {
 		newEntry.ID = entry.ID
@@ -202,8 +202,10 @@ func (p *publisher) fetchIndex(ctx context.Context, branch string) (*indexFile, 
 
 // authorOf 返回插件作者：优先 plugin.json 的 author，否则取 id 的发布者段。
 func authorOf(m Manifest) string {
-	if strings.TrimSpace(m.Author) != "" {
-		return m.Author
+	// TrimSpace 兜底：即使校验被绕过（如历史数据），生成 index 条目时也绝不写入
+	// 带首尾空白的 author，避免 APP 端 AUTHOR 正则匹配失败、拒绝加载整个商店索引。
+	if a := strings.TrimSpace(m.Author); a != "" {
+		return a
 	}
 	if i := strings.Index(m.ID, "."); i > 0 {
 		return m.ID[:i]
@@ -425,6 +427,20 @@ func (p *publisher) storeRepositoryURL() string {
 	return fmt.Sprintf("https://github.com/%s/%s", p.cfg.GHOwner, p.cfg.GHRepo)
 }
 
+// appManifestTopLevelAllowed 判断 plugin.json 顶层字段是否被 APP 严格解析器允许。
+// APP 端 PluginManifestParser 用固定白名单校验顶层字段，白名单外的键（典型如 author，
+// APP 只认 publisher）会触发 UNSUPPORTED_FIELD 直接拒绝整个包，导致该插件在商店里
+// 无法加载/安装。发布时据此剔除多余顶层字段；作者信息由 index.json 承载，包内无需保留。
+func appManifestTopLevelAllowed(key string) bool {
+	switch key {
+	case "$schema", "manifestVersion", "id", "name", "version", "publisher",
+		"repository", "description", "license", "engines", "runtime",
+		"contributes", "configPage", "icon":
+		return true
+	}
+	return false
+}
+
 // rewriteZipManifestRepository 把插件包 zip 内 plugin.json 的 repository 字段改写为 storeRepoURL，
 // 其余文件字节原样保留。返回新的 zip 字节。用于发布时统一对齐商店仓库，避免 APP 端
 // "源码仓库与商店登记不一致"校验失败。
@@ -448,13 +464,22 @@ func rewriteZipManifestRepository(zipBytes []byte, storeRepoURL string) ([]byte,
 			return nil, fmt.Errorf("读取包内文件 %s 失败: %w", f.Name, err)
 		}
 
-		// 仅改写 plugin.json（根目录）的 repository 字段
+		// 改写 plugin.json（根目录）：repository 统一为商店仓库，并清洗掉 APP
+		// 严格解析器不认的顶层字段（如 author，APP 只认 publisher）。APP 的
+		// PluginManifestParser 用白名单校验顶层字段，包内一旦出现白名单外的键，会以
+		// UNSUPPORTED_FIELD 拒绝整个包，导致商店里该插件无法加载/安装。发布时在此
+		// 自动剔除；作者信息已由 index.json 承载，包内无需保留。
 		if f.Name == "plugin.json" || f.Name == "/plugin.json" {
 			var m map[string]interface{}
 			if err := json.Unmarshal(data, &m); err != nil {
 				return nil, fmt.Errorf("解析包内 plugin.json 失败: %w", err)
 			}
 			m["repository"] = storeRepoURL
+			for k := range m {
+				if !appManifestTopLevelAllowed(k) {
+					delete(m, k)
+				}
+			}
 			data, err = json.MarshalIndent(m, "", "  ")
 			if err != nil {
 				return nil, fmt.Errorf("序列化 plugin.json 失败: %w", err)
