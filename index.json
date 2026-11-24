@@ -12,11 +12,11 @@
         "zh-CN": "为当前 Flutter / Android 项目提供构建与清理工具。"
       },
       "author": "aiverse",
-      "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.1.1",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "1.1.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.dev-tools_1.1.1.zip",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "logo": "https://raw.githubusercontent.com/xzyy03/Muse-Plugins-Store/main/icons/community.dev-tools.png"
     },
     {
       "id": "aiverse.background-approval",
@@ -29,11 +29,10 @@
         "zh-CN": "AiCode 在后台时显示悬浮球；AI 需要授权时展开审批面板。App 在前台时直接交回应用内确认框，不阻塞审批。"
       },
       "author": "aiverse",
-      "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.1.1",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "1.1.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.background-approval_1.1.1.zip",
+      "repository": "https://github.com/yhdmgf/aiverserules"
     },
     {
       "id": "aiverse.gateway",
@@ -47,27 +46,26 @@
       },
       "author": "aiverse",
       "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.0.1",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "1.0.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.gateway_1.0.1.zip"
     },
     {
       "id": "aiverse.armor-deepseek",
       "name": {
-        "default": "Armor Console (DeepSeek v2.4)",
-        "zh-CN": "破甲控制台 · DeepSeek v2.4"
+        "zh-CN": "破甲控制台 · DeepSeek v2.4",
+        "default": "Armor Console (DeepSeek v2.4)"
       },
       "description": {
-        "default": "Deploy the armor prompt into prompts.custom: full/lite, global/project, auto backup and rollback. Pure page implementation.",
-        "zh-CN": "破甲提示词一键部署进 prompts.custom：完整版/精简版、全局/项目级、自动备份与一键回滚。纯页面实现，不依赖插件进程。"
+        "zh-CN": "破甲提示词一键部署进 prompts.custom：完整版/精简版、全局/项目级、自动备份与一键回滚。纯页面实现，不依赖插件进程。",
+        "default": "Deploy the armor prompt into prompts.custom: full/lite, global/project, auto backup and rollback. Pure page implementation."
       },
       "author": "aiverse",
       "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.1.1",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "1.1.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.armor-deepseek_1.1.1.zip",
+      "icon": "shield"
     },
     {
       "id": "aiverse.wb-gateway",
@@ -81,10 +79,10 @@
       },
       "author": "aiverse",
       "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.5.2",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "1.5.2",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.wb-gateway_1.5.2.zip",
+      "icon": "zap"
     },
     {
       "id": "aiverse.dafeiyu-pet",
@@ -98,10 +96,10 @@
       },
       "author": "aiverse",
       "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "2.9.1",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "2.9.1",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.dafeiyu-pet_2.9.1.zip",
+      "logo": "https://raw.githubusercontent.com/xzyy03/Muse-Plugins-Store/main/icons/jinghan.dafeiyu-pet.png"
     },
     {
       "id": "aiverse.env-deps",
@@ -115,10 +113,11 @@
       },
       "author": "aiverse",
       "repository": "https://github.com/yhdmgf/aiverserules",
-      "version": "1.1.0",
       "license": "MIT",
-      "tags": null,
-      "lastUpdate": 0
+      "version": "1.1.0",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.env-deps_1.1.0.zip",
+      "icon": "layers"
     }
-  ]
+  ],
+  "updatedAt": "2026-11-19T00:00:00Z"
 }
