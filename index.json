@@ -117,7 +117,23 @@
       "version": "1.1.0",
       "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/aiverse.env-deps_1.1.0.zip",
       "icon": "layers"
+    },
+    {
+      "id": "liulei92.clip",
+      "name": {
+        "default": "Clipboard Helper",
+        "zh-CN": "剪贴板助手"
+      },
+      "description": {
+        "default": "Write text to the system clipboard and show a compact copy tip; read clipboard text for context. Includes a minimal config page.",
+        "zh-CN": "把文本写入系统剪贴板并弹出精简提示条；也能读取剪贴板内容喂给模型；附带一个极简配置页。"
+      },
+      "author": "liulei92",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "license": "MIT",
+      "version": "1.0.2",
+      "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/liulei92.clip_1.0.2.zip"
     }
   ],
-  "updatedAt": "2026-11-19T00:00:00Z"
+  "updatedAt": "2026-11-24T00:00:00Z"
 }
