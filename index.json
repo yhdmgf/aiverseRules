@@ -145,7 +145,7 @@
         "zh-CN": "登录 GitHub 后自动获取你的仓库项目：账号工作台、仓库列表与详情、语言构成、分支、提交、Issue/PR、代码浏览与搜索，全部工具同时以本地 MCP 服务对外提供，可接入任意 MCP 客户端。"
       },
       "author": "bigorange",
-      "repository": "https://github.com/bigorange/nox-github-mcp",
+      "repository": "https://github.com/yhdmgf/aiverserules",
       "license": "MIT",
       "version": "1.5.2",
       "package_url": "https://raw.githubusercontent.com/yhdmgf/aiverserules/main/packages/bigorange.github-mcp_1.5.2.zip",
