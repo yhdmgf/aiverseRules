@@ -138,14 +138,14 @@
       "lastUpdate": 0
     },
     {
-      "id": "liulei92.gpt-gateway",
+      "id": "liulei92.clip",
       "name": {
-        "default": "GPT Gateway",
-        "zh-CN": "GPT 网关"
+        "default": "Clipboard Helper",
+        "zh-CN": "剪贴板助手"
       },
       "description": {
-        "default": "Local OpenAI-compatible gateway: begamob v3 reverse proxy (gpt-5-mini / gemini-2.5-pro) + goatchat image generation. Protocol translated from the AI reverse proxy gateway APK and the Chat-AI-APP-2api research.",
-        "zh-CN": "本地 OpenAI 兼容网关：begamob v3 反代（gpt-5-mini / gemini-2.5-pro）+ goatchat 文生图。协议自 AI 反代网关 APK 与 Chat-AI-APP-2api 研究成果移植。"
+        "default": "Write text to the system clipboard and show a compact copy tip; read clipboard text for context. Includes a minimal config page.",
+        "zh-CN": "把文本写入系统剪贴板并弹出精简提示条；也能读取剪贴板内容喂给模型；附带一个极简配置页。"
       },
       "author": "liulei92",
       "repository": "https://github.com/yhdmgf/aiverserules",
