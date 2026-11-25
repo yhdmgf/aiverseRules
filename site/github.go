@@ -48,15 +48,20 @@ type indexFile struct {
 
 // indexEntry 是 index.json 中单个插件条目。
 type indexEntry struct {
-	ID          string        `json:"id"`
-	Name        LocalizedText `json:"name"`
-	Description LocalizedText `json:"description"`
-	Author      string        `json:"author"`
-	Repository  string        `json:"repository"`
-	Version     string        `json:"version"`
-	License     string        `json:"license"`
-	Tags        []string      `json:"tags"`
-	LastUpdate  int64         `json:"lastUpdate"`
+	ID            string        `json:"id"`
+	Name          LocalizedText `json:"name"`
+	Description   LocalizedText `json:"description"`
+	Author        string        `json:"author"`
+	Repository    string        `json:"repository"`
+	Version       string        `json:"version"`
+	License       string        `json:"license"`
+	Tags          []string      `json:"tags"`
+	LastUpdate    int64         `json:"lastUpdate"`
+	Logo          string        `json:"logo,omitempty"`
+	Icon          string        `json:"icon,omitempty"`
+	Homepage      string        `json:"homepage,omitempty"`
+	PackageURL    string        `json:"package_url,omitempty"`
+	MinAppVersion string        `json:"min_app_version,omitempty"`
 }
 
 // ghAPI 返回 Contents API 的文件 URL。
@@ -103,6 +108,18 @@ func (s *Store) publishToStore(r *http.Request, entry *QueueEntry) error {
 	commitMsg := fmt.Sprintf("发布插件 %s v%s", entry.ID, entry.Version)
 	if err := p.putFile(ctx, pkgRemote, zipBytes, commitMsg); err != nil {
 		return fmt.Errorf("上传插件包失败: %w", err)
+	}
+
+	// 1.5) 上传图标：清单 icon 为包内图片路径（如 assets/icon.png）时，从包内提取
+	// 图片上传到 icons/<id>.png，供 index 的 logo 直链使用；内置图标名（zap/layers 等）
+	// 无需上传，APP 直接用内置图标。
+	if manifest.Icon != "" && !isBuiltinIcon(manifest.Icon) {
+		if iconBytes, err := readZipEntry(zipBytes, manifest.Icon); err == nil && len(iconBytes) > 0 {
+			iconRemote := fmt.Sprintf("icons/%s.png", entry.ID)
+			if err := p.putFile(ctx, iconRemote, iconBytes, "上传插件图标 "+entry.ID); err != nil {
+				return fmt.Errorf("上传插件图标失败: %w", err)
+			}
+		}
 	}
 
 	// 2) 读取并更新 index.json
@@ -157,6 +174,21 @@ func (p *publisher) updateIndex(ctx context.Context, branch string, entry *Queue
 	}
 	if newEntry.Version == "" {
 		newEntry.Version = entry.Version
+	}
+
+	// 自动生成直链下载地址（package_url）：APP 有值时直接下载，不再查询作者仓库 Release。
+	newEntry.PackageURL = p.packageURL(newEntry.ID, newEntry.Version)
+	// 图标：清单 icon 为内置图标名（如 zap/layers）时写入 icon；为包内图片路径时
+	// 由发布流程上传到 icons/<id>.png，这里用其直链作为 logo。
+	if m.Icon != "" {
+		if isBuiltinIcon(m.Icon) {
+			newEntry.Icon = m.Icon
+		} else {
+			newEntry.Logo = p.iconURL(newEntry.ID)
+		}
+	}
+	if m.Homepage != "" {
+		newEntry.Homepage = m.Homepage
 	}
 
 	// 幂等：同 id 同版本则更新，否则追加
@@ -425,6 +457,49 @@ func (p *publisher) deleteFile(ctx context.Context, remotePath string) error {
 // 以及发布时改写进插件包内的 plugin.json repository，保证两处值与大小写完全一致）。
 func (p *publisher) storeRepositoryURL() string {
 	return fmt.Sprintf("https://github.com/%s/%s", p.cfg.GHOwner, p.cfg.GHRepo)
+}
+
+// rawURL 返回商店仓库内某文件的 raw 直链（raw.githubusercontent.com）。
+func (p *publisher) rawURL(path string) string {
+	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s",
+		p.cfg.GHOwner, p.cfg.GHRepo, p.cfg.GHBranch, path)
+}
+
+// packageURL 返回插件包直链下载地址（index 的 package_url 字段）。
+func (p *publisher) packageURL(id, version string) string {
+	return p.rawURL(fmt.Sprintf("packages/%s_%s.zip", id, version))
+}
+
+// iconURL 返回插件图标直链地址（index 的 logo 字段）。
+func (p *publisher) iconURL(id string) string {
+	return p.rawURL(fmt.Sprintf("icons/%s.png", id))
+}
+
+// isBuiltinIcon 判断清单 icon 是否为内置图标名（zap/layers/shield 等）。
+// 与 APP 端 PluginManifestParser.isIconFilePath 约定一致：以 .png/.webp 结尾视为包内图片路径，
+// 其余视为内置图标名。
+func isBuiltinIcon(value string) bool {
+	lower := strings.ToLower(value)
+	return !strings.HasSuffix(lower, ".png") && !strings.HasSuffix(lower, ".webp")
+}
+
+// readZipEntry 从插件包 zip 中按文件名（不区分大小写）读取一个条目。
+func readZipEntry(zipBytes []byte, name string) ([]byte, error) {
+	zr, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		return nil, fmt.Errorf("读取插件包失败: %w", err)
+	}
+	for _, f := range zr.File {
+		if strings.EqualFold(f.Name, name) || strings.EqualFold(f.Name, "/"+name) {
+			rc, err := f.Open()
+			if err != nil {
+				return nil, fmt.Errorf("读取包内文件 %s 失败: %w", f.Name, err)
+			}
+			defer rc.Close()
+			return io.ReadAll(io.LimitReader(rc, maxUploadSize))
+		}
+	}
+	return nil, fmt.Errorf("包内未找到图标 %s", name)
 }
 
 // appManifestTopLevelAllowed 判断 plugin.json 顶层字段是否被 APP 严格解析器允许。

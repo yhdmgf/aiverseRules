@@ -21,6 +21,8 @@ type Manifest struct {
 	License         string               `json:"license"`
 	Repository      string               `json:"repository"`
 	Tags            []string             `json:"tags,omitempty"`
+	Icon            string               `json:"icon,omitempty"`
+	Homepage        string               `json:"homepage,omitempty"`
 	Contributes     ManifestContributes  `json:"contributes"`
 }
 
