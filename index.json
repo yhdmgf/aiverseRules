@@ -138,6 +138,23 @@
       "lastUpdate": 0
     },
     {
+      "id": "liulei92.gpt-gateway",
+      "name": {
+        "default": "GPT Gateway",
+        "zh-CN": "GPT 网关"
+      },
+      "description": {
+        "default": "Local OpenAI-compatible gateway: begamob v3 reverse proxy (gpt-5-mini / gemini-2.5-pro) + goatchat image generation. Protocol translated from the AI reverse proxy gateway APK and the Chat-AI-APP-2api research.",
+        "zh-CN": "本地 OpenAI 兼容网关：begamob v3 反代（gpt-5-mini / gemini-2.5-pro）+ goatchat 文生图。协议自 AI 反代网关 APK 与 Chat-AI-APP-2api 研究成果移植。"
+      },
+      "author": "liulei92",
+      "repository": "https://github.com/yhdmgf/aiverserules",
+      "version": "1.0.2",
+      "license": "MIT",
+      "tags": null,
+      "lastUpdate": 0
+    },
+    {
       "id": "bigorange.github-mcp",
       "name": {
         "default": "GitHub MCP",
